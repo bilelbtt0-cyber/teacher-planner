@@ -1,0 +1,24 @@
+{
+  "name": "teacher-planner",
+  "version": "1.0.0",
+  "description": "Personal schedule, reminders and attestation tracker for a teacher",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js"
+  },
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "archiver": "^8.0.0",
+    "express": "^5.3.0",
+    "fullcalendar": "^6.1.21",
+    "jspdf": "^4.2.1",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.1.1"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
