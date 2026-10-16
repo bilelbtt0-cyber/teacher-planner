@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { t, tn, todayStr, addDaysStr, fmtDate, fmtWeekdayLong, reminderLabel, hoursLabel } from '../i18n.js';
 import { state, loadSettings, loadCategories, changed, applyTheme, activeCategories, emit } from '../store.js';
-import { esc, icon, on, toast, errorToast, setBusy, CATEGORY_COLORS, openModal } from '../ui.js';
+import { esc, icon, on, toast, errorToast, setBusy, CATEGORY_COLORS, PALETTES, paletteGrid, openModal } from '../ui.js';
 
 // The welcome guide: a few friendly steps that collect her answers AND set the app up with them.
 // Everything is saved after each step, so she can stop at any time and continue later.
@@ -84,7 +84,8 @@ export async function render(root) {
     name: state.user.name,
     language: s.language,
     theme: s.theme,
-    accentColor: s.accentColor || '#5b5bd6',
+    palette: s.palette || 'rose',
+    accentColor: s.accentColor || '#e0457b',
     appName: s.appName && s.appName !== 'Planner' ? s.appName : '',
     devices: [],
     phoneScan: '',
@@ -253,13 +254,7 @@ export async function render(root) {
           ${q(t('Your name'), `<input class="input" name="name" value="${esc(a.name)}" maxlength="80">`, '', 'name')}
           ${q(t('Language'), yesNo('language', a.language, [['fr', 'Français'], ['en', 'English']]))}
           ${q(t('Name of your planner'), `<input class="input" name="appName" value="${esc(a.appName)}" placeholder="${esc(t('e.g. Marwa’s planner'))}" maxlength="40">`, t('Shown at the top of the app and in your emails. Leave empty to keep “Planner”.'))}
-          ${q(
-            t('Your colour'),
-            `<div class="color-swatches">${CATEGORY_COLORS.slice(0, 9)
-              .map((c) => `<button type="button" class="swatch ${c === a.accentColor ? 'active' : ''}" data-accent="${c}" style="background:${c}" aria-label="${c}"></button>`)
-              .join('')}</div>`,
-            t('The whole app changes colour as you pick.')
-          )}
+          ${q(t('Colour theme'), paletteGrid(a.palette || 'rose'), t('The whole app changes colour as you pick.'))}
           ${q(t('Theme'), yesNo('theme', a.theme, [['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']]))}
           ${q(
             t('Which devices will you use?'),
@@ -576,7 +571,7 @@ export async function render(root) {
         const res = await api.put('/api/auth/profile', { name: a.name.trim() });
         state.user = res.user;
       }
-      await api.put('/api/settings', { theme: a.theme, accentColor: a.accentColor, appName: a.appName.trim() || 'Planner' });
+      await api.put('/api/settings', { theme: a.theme, palette: a.palette || 'rose', accentColor: a.accentColor, appName: a.appName.trim() || 'Planner' });
     },
     async institutions() {
       const rows = A.institutions.rows.filter((r) => r.name.trim());
@@ -796,10 +791,14 @@ export async function render(root) {
     else list.push(b.dataset.val);
     rerender();
   });
-  on(root, 'click', '[data-accent]', (e, b) => {
+  on(root, 'click', '[data-palette-opt]', (e, b) => {
     collect();
-    A.about.accentColor = b.dataset.accent;
-    state.settings.accentColor = b.dataset.accent;
+    const p = PALETTES.find((x) => x.id === b.dataset.paletteOpt);
+    A.about.palette = p.id;
+    A.about.accentColor = p.accent;
+    // Live preview: the whole page changes as she picks.
+    state.settings.palette = p.id;
+    state.settings.accentColor = p.accent;
     applyTheme();
     rerender();
   });

@@ -251,6 +251,17 @@ export function emptyState({ iconName = 'inbox', title, text = '', action = '' }
   }${action}</div>`;
 }
 
+// Colour themes: a main colour plus soft backgrounds (light mode). Pink first: it is the default.
+export const PALETTES = [
+  { id: 'rose', name: 'Rose', accent: '#e0457b', bg: '#fff5f8' },
+  { id: 'red', name: 'Coral red', accent: '#e5484d', bg: '#fff6f5' },
+  { id: 'mint', name: 'Mint green', accent: '#2a9d6f', bg: '#f1faf5' },
+  { id: 'lavender', name: 'Lavender', accent: '#8e4ec6', bg: '#f8f4fd' },
+  { id: 'peach', name: 'Peach', accent: '#f0702e', bg: '#fff6ef' },
+  { id: 'sky', name: 'Sky blue', accent: '#0a84e0', bg: '#f1f7fe' },
+  { id: 'classic', name: 'Classic', accent: '#5b5bd6', bg: '#f6f6f9' },
+];
+
 export const CATEGORY_COLORS = ['#5b5bd6', '#e5484d', '#f76b15', '#f5a524', '#30a46c', '#12a594', '#0090ff', '#8e4ec6', '#d6409f', '#6e6e82'];
 
 export function debounce(fn, ms = 250) {
@@ -268,4 +279,13 @@ export function initials(name = '') {
     .slice(0, 2)
     .map((p) => p[0].toUpperCase())
     .join('') || '?';
+}
+
+/** Theme picker: one card per colour theme, with a small preview. */
+export function paletteGrid(current) {
+  return `<div class="palette-grid">${PALETTES.map(
+    (p) => `<button type="button" class="palette-opt ${p.id === current ? 'active' : ''}" data-palette-opt="${p.id}" aria-pressed="${p.id === current}">
+      <span class="palette-swatch" style="background:${p.bg}"><b style="background:${p.accent}"></b><i style="background:${p.accent}"></i></span>
+      <span class="nm">${esc(t(p.name))}</span></button>`
+  ).join('')}</div>`;
 }

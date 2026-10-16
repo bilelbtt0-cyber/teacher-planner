@@ -253,6 +253,10 @@ miscRouter.put('/settings', async (req, res) => {
   }
   if (b.emailEnabled !== undefined) patch.emailEnabled = !!b.emailEnabled;
   if (b.appName !== undefined) patch.appName = String(b.appName).trim().slice(0, 40) || 'Planner';
+  if (b.palette !== undefined) {
+    if (!['rose', 'red', 'mint', 'lavender', 'peach', 'sky', 'classic'].includes(b.palette)) throw httpError(400, 'Unknown theme.');
+    patch.palette = b.palette;
+  }
   if (b.accentColor !== undefined) {
     if (!/^#[0-9a-f]{6}$/i.test(b.accentColor)) throw httpError(400, 'Invalid colour.');
     patch.accentColor = b.accentColor.toLowerCase();

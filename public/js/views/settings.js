@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { t, tn, reminderLabel, timeAgo, hoursLabel, dateToWall, fmtDate } from '../i18n.js';
 import { state, subscribe, loadSettings, loadCategories, changed, emit } from '../store.js';
-import { esc, icon, on, toast, errorToast, setBusy, confirmDialog, initials, CATEGORY_COLORS } from '../ui.js';
+import { esc, icon, on, toast, errorToast, setBusy, confirmDialog, initials, CATEGORY_COLORS, PALETTES, paletteGrid } from '../ui.js';
 import { openCategoryForm, ruleDescription, categoryPayload } from '../eventForm.js';
 
 const SECTIONS = [
@@ -197,10 +197,8 @@ export async function render(root, params) {
             <div class="control"><div class="segmented"><button data-lang="fr" class="${s.language === 'fr' ? 'active' : ''}">Français</button><button data-lang="en" class="${s.language === 'en' ? 'active' : ''}">English</button></div></div></div>
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Name of your planner'))}</div><div class="d">${esc(t('Shown at the top of the app and in your emails.'))}</div></div>
             <div class="control"><input class="input" data-setting="appName" value="${esc(s.appName || 'Planner')}" maxlength="40" style="width:220px"></div></div>
-          <div class="setting-row"><div class="info"><div class="t">${esc(t('Your colour'))}</div></div>
-            <div class="control"><div class="color-swatches">${CATEGORY_COLORS.slice(0, 9)
-              .map((c) => `<button type="button" class="swatch ${c === (s.accentColor || '#5b5bd6') ? 'active' : ''}" data-accent="${c}" style="background:${c}" aria-label="${c}"></button>`)
-              .join('')}</div></div></div>
+          <div class="setting-row stacked"><div class="info"><div class="t">${esc(t('Colour theme'))}</div><div class="d">${esc(t('Changes the colours of the whole planner.'))}</div></div>
+            <div class="control">${paletteGrid(s.palette || 'rose')}</div></div>
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Theme'))}</div></div>
             <div class="control"><div class="segmented">${['system', 'light', 'dark']
               .map((th) => `<button data-theme-opt="${th}" class="${s.theme === th ? 'active' : ''}">${esc(t(th === 'system' ? 'Automatic' : th === 'light' ? 'Light' : 'Dark'))}</button>`)
@@ -399,8 +397,9 @@ export async function render(root, params) {
     const { openAnswersSummary } = await import('./welcome.js');
     openAnswersSummary();
   });
-  on(box, 'click', '[data-accent]', async (e, b) => {
-    await saveSettings({ accentColor: b.dataset.accent });
+  on(box, 'click', '[data-palette-opt]', async (e, b) => {
+    const p = PALETTES.find((x) => x.id === b.dataset.paletteOpt);
+    await saveSettings({ palette: p.id, accentColor: p.accent }, t('Theme changed'));
   });
   on(box, 'click', '[data-del-hol]', async (e, b) => {
     const h = holidays.find((x) => x.id === Number(b.dataset.delHol));

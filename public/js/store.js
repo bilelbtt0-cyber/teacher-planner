@@ -42,10 +42,11 @@ export function applyTheme() {
   const dark = pref === 'dark' || (pref === 'system' && media.matches);
   const root = document.documentElement;
   root.dataset.theme = dark ? 'dark' : 'light';
+  root.dataset.palette = state.settings?.palette || 'rose';
   const accent = state.settings?.accentColor;
   if (accent && /^#[0-9a-f]{6}$/i.test(accent)) root.style.setProperty('--accent', accent);
   else root.style.removeProperty('--accent');
-  document.querySelector('meta[name=theme-color]')?.setAttribute('content', accent || '#5b5bd6');
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', accent || '#e0457b');
 }
 
 export const appName = () => state.settings?.appName || 'Planner';

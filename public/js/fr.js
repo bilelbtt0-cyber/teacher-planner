@@ -880,6 +880,19 @@ export const FR = {
   'Every 2 weeks (from next week)': 'Une semaine sur deux (dès la semaine prochaine)',
   'every 2 weeks': 'une semaine sur deux',
 
+  // ---- Colour themes
+  'Colour theme': 'Thème de couleurs',
+  'Changes the colours of the whole planner.': 'Change les couleurs de tout l’agenda.',
+  'Theme changed': 'Thème modifié',
+  'Unknown theme.': 'Thème inconnu.',
+  'Rose': 'Rose',
+  'Coral red': 'Rouge corail',
+  'Mint green': 'Vert menthe',
+  'Lavender': 'Lavande',
+  'Peach': 'Pêche',
+  'Sky blue': 'Bleu ciel',
+  'Classic': 'Classique',
+
   // ---- Hosting
   'Invitation code': 'Code d’invitation',
   'The code you received with the link.': 'Le code reçu avec le lien.',

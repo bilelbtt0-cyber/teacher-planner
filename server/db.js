@@ -242,7 +242,9 @@ export const DEFAULT_SETTINGS = {
   digestTime: '07:00',
   smtp: { host: '', port: 587, secure: false, user: '', pass: '', from: '' },
   appName: 'Planner',
-  accentColor: '#5b5bd6',
+  // Colour theme (soft backgrounds) and its main colour. Pink by default.
+  palette: 'rose',
+  accentColor: '#e0457b',
   // The welcome guide: where she stopped, and every answer she gave (also read by the developer).
   onboarding: { completed: false, completedAt: null, step: 0, answers: {} },
 };

@@ -15,7 +15,7 @@
   --text-2: #565670;
   --text-3: #8a8aa0;
 
-  --accent: #5b5bd6;
+  --accent: #e0457b;
   --primary: var(--accent);
   --primary-hover: color-mix(in srgb, var(--primary) 86%, #000);
   --primary-soft: color-mix(in srgb, var(--primary) 11%, #fff);
@@ -827,7 +827,7 @@ body.route-welcome .fab { display: none; }
   background:
     radial-gradient(circle at 15% 20%, color-mix(in srgb, #ffd6a5 55%, transparent) 0, transparent 45%),
     radial-gradient(circle at 85% 80%, color-mix(in srgb, var(--accent) 22%, transparent) 0, transparent 50%),
-    linear-gradient(160deg, #fff7ef 0%, color-mix(in srgb, var(--accent) 10%, #fff) 100%);
+    linear-gradient(160deg, var(--palette-bg, #fff7ef) 0%, color-mix(in srgb, var(--accent) 12%, #fff) 100%);
   color: #2a2438;
 }
 .auth-art.soft::before, .auth-art.soft::after { display: none; }
@@ -859,7 +859,7 @@ body.route-welcome .fab { display: none; }
 .auth-mobile-brand .brand-logo { background: var(--primary); }
 @media (max-width: 860px) {
   .auth-mobile-brand { display: flex; margin-bottom: 4px; }
-  .auth-form-wrap { background: linear-gradient(180deg, #fff7ef 0%, var(--bg) 280px); align-items: start; padding-top: 48px; }
+  .auth-form-wrap { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, #fff) 0%, var(--bg) 280px); align-items: start; padding-top: 48px; }
 }
 :root[data-theme='dark'] .auth-form-wrap { background: var(--bg); }
 
@@ -881,3 +881,21 @@ body.onboarding-lock .content { padding-bottom: 48px; }
 .wiz-inst.missing::after, .wiz-slot.missing::after { content: attr(data-missing-text); display: block; width: 100%; color: var(--danger-text); font-size: 13px; font-weight: 600; margin-top: 8px; }
 .wiz-slot.missing { background: var(--danger-soft); }
 @media (max-width: 860px) { body.onboarding-lock .wiz-foot { bottom: 0; } }
+
+/* ---------- Colour themes (light mode): soft backgrounds matching the main colour ---------- */
+:root[data-theme='light'][data-palette='rose'] { --palette-bg: #fff5f8; --bg: #fff5f8; --surface-2: #fdeef3; --surface-3: #f8dfe8; --border: #f4dde5; --border-strong: #eac7d3; }
+:root[data-theme='light'][data-palette='red'] { --palette-bg: #fff6f5; --bg: #fff6f5; --surface-2: #fdefed; --surface-3: #f8e0dd; --border: #f3dedb; --border-strong: #e9c8c4; }
+:root[data-theme='light'][data-palette='mint'] { --palette-bg: #f1faf5; --bg: #f1faf5; --surface-2: #e8f5ee; --surface-3: #d8ece1; --border: #d9ebe0; --border-strong: #bfdccb; }
+:root[data-theme='light'][data-palette='lavender'] { --palette-bg: #f8f4fd; --bg: #f8f4fd; --surface-2: #f1eafa; --surface-3: #e5daf4; --border: #e7def3; --border-strong: #d4c5ea; }
+:root[data-theme='light'][data-palette='peach'] { --palette-bg: #fff6ef; --bg: #fff6ef; --surface-2: #fdeee3; --surface-3: #f8e0cf; --border: #f3e1d3; --border-strong: #e9cbb6; }
+:root[data-theme='light'][data-palette='sky'] { --palette-bg: #f1f7fe; --bg: #f1f7fe; --surface-2: #e8f1fc; --surface-3: #d8e6f8; --border: #d9e6f5; --border-strong: #bfd4ee; }
+
+.palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; width: 100%; }
+.palette-opt { border: 2px solid var(--border-strong); border-radius: 14px; padding: 10px; background: var(--surface); cursor: pointer; display: flex; flex-direction: column; gap: 8px; text-align: left; transition: transform .15s var(--ease), border-color .15s; }
+.palette-opt:hover { transform: translateY(-2px); }
+.palette-opt.active { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.palette-swatch { height: 46px; border-radius: 10px; position: relative; overflow: hidden; border: 1px solid rgba(0, 0, 0, .05); }
+.palette-swatch i { position: absolute; left: 10px; bottom: 10px; width: 26px; height: 26px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0, 0, 0, .15); }
+.palette-swatch b { position: absolute; right: 10px; top: 12px; width: 44px; height: 8px; border-radius: 99px; opacity: .5; }
+.palette-opt .nm { font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 6px; }
+.palette-opt.active .nm::after { content: '✓'; color: var(--primary); margin-left: auto; }
