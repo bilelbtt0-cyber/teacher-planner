@@ -1,23 +1,23 @@
 import { Router } from 'express';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { ZipArchive } from 'archiver';
-import { db, getSettings, saveSettings, DEFAULT_SETTINGS, UPLOAD_DIR } from '../db.js';
+import { db, getSettings, saveSettings, DEFAULT_SETTINGS } from '../db.js';
 import { httpError } from '../recurrence.js';
 import { nowIn, addDays, datePart, isDateOnly, isValidTimezone, toDate } from '../time.js';
 import { serializeEvent, KINDS } from './events.js';
-import { serializeDoc } from './documents.js';
+import { serializeDoc, DOC_SELECT } from './documents.js';
 import { categoryProgress, teachingHours } from '../attestation.js';
-import { sendMail, smtpConfigured, recipient, layout } from '../mailer.js';
+import { sendMail, emailConfigured, emailManaged, recipient, layout } from '../mailer.js';
 import { tick } from '../scheduler.js';
 
 export const miscRouter = Router();
 
+const round = (n) => Math.round(n * 100) / 100;
+const WITH_DOCS = `SELECT e.*, (SELECT COUNT(*) FROM document_events x WHERE x.event_id = e.id) AS document_count FROM events e`;
+
 // ---------- Dashboard ----------
 
-miscRouter.get('/dashboard', (req, res) => {
-  const settings = getSettings();
+miscRouter.get('/dashboard', async (req, res) => {
+  const settings = await getSettings();
   const now = nowIn(settings.timezone);
   const today = `${datePart(now)}T00:00`;
   const tomorrow = addDays(today, 1);
@@ -28,27 +28,28 @@ miscRouter.get('/dashboard', (req, res) => {
   const nm = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
   const monthEnd = `${nm.toISOString().slice(0, 10)}T00:00`;
 
-  const withCat = `SELECT e.*, (SELECT COUNT(*) FROM document_events x WHERE x.event_id = e.id) AS document_count FROM events e`;
-  const todayEvents = db.prepare(`${withCat} WHERE e.start < ? AND e.end > ? ORDER BY e.all_day DESC, e.start`).all(tomorrow, today);
-  const upcoming = db
-    .prepare(`${withCat} WHERE e.start >= ? AND e.start < ? AND e.status = 'scheduled' ORDER BY e.start LIMIT 12`)
-    .all(tomorrow, addDays(today, 8));
-  const pending = db
-    .prepare(
-      `${withCat} WHERE e.attestation_required = 1 AND e.attestation_status = 'pending' AND e.status = 'scheduled' AND e.end <= ? ORDER BY e.end`
-    )
-    .all(now);
-  const upcomingAttestations = db
-    .prepare(
-      `${withCat} WHERE e.attestation_required = 1 AND e.attestation_status = 'pending' AND e.status = 'scheduled'
-       AND e.end > ? AND e.start < ? ORDER BY e.start`
-    )
-    .all(now, addDays(today, 15));
+  const [todayEvents, upcoming, pending, upcomingAttestations, monthRows, received, docCount, progress] = await Promise.all([
+    db.all(`${WITH_DOCS} WHERE e.start < ? AND e.end > ? ORDER BY e.all_day DESC, e.start`, tomorrow, today),
+    db.all(`${WITH_DOCS} WHERE e.start >= ? AND e.start < ? AND e.status = 'scheduled' ORDER BY e.start LIMIT 12`, tomorrow, addDays(today, 8)),
+    db.all(
+      `${WITH_DOCS} WHERE e.attestation_required = 1 AND e.attestation_status = 'pending' AND e.status = 'scheduled' AND e.end <= ? ORDER BY e.end`,
+      now
+    ),
+    db.all(
+      `${WITH_DOCS} WHERE e.attestation_required = 1 AND e.attestation_status = 'pending' AND e.status = 'scheduled'
+       AND e.end > ? AND e.start < ? ORDER BY e.start`,
+      now,
+      addDays(today, 15)
+    ),
+    // One query covers both the week and the month.
+    db.all('SELECT * FROM events WHERE start >= ? AND start < ?', weekStart < monthStart ? weekStart : monthStart, weekEnd > monthEnd ? weekEnd : monthEnd),
+    db.get(`SELECT COUNT(*) AS n FROM events WHERE attestation_status = 'received' AND substr(attestation_received_at,1,4) = ?`, now.slice(0, 4)),
+    db.get('SELECT COUNT(*) AS n FROM documents'),
+    categoryProgress(now),
+  ]);
 
-  const hoursIn = (from, to, onlyPast) => {
-    const rows = db.prepare(`SELECT * FROM events WHERE start >= ? AND start < ?`).all(from, to);
-    return rows.filter((e) => !onlyPast || e.end <= now).reduce((sum, e) => sum + teachingHours(e), 0);
-  };
+  const hoursIn = (from, to, onlyPast) =>
+    monthRows.filter((e) => e.start >= from && e.start < to && (!onlyPast || e.end <= now)).reduce((sum, e) => sum + teachingHours(e), 0);
 
   res.json({
     now,
@@ -61,27 +62,18 @@ miscRouter.get('/dashboard', (req, res) => {
       weekHoursDone: round(hoursIn(weekStart, weekEnd, true)),
       monthHoursPlanned: round(hoursIn(monthStart, monthEnd, false)),
       monthHoursDone: round(hoursIn(monthStart, monthEnd, true)),
-      receivedThisYear: db
-        .prepare(`SELECT COUNT(*) AS n FROM events WHERE attestation_status = 'received' AND substr(attestation_received_at,1,4) = ?`)
-        .get(now.slice(0, 4)).n,
-      documents: db.prepare('SELECT COUNT(*) AS n FROM documents').get().n,
+      receivedThisYear: received.n,
+      documents: docCount.n,
     },
-    progress: categoryProgress(now).filter((p) => p.everyHours),
-    emailReady: smtpConfigured(settings) && settings.emailEnabled,
+    progress: progress.filter((p) => p.everyHours),
+    emailReady: emailConfigured(settings) && settings.emailEnabled,
   });
 });
 
-const round = (n) => Math.round(n * 100) / 100;
-
-miscRouter.get('/attestations', (req, res) => {
-  const settings = getSettings();
+miscRouter.get('/attestations', async (req, res) => {
+  const settings = await getSettings();
   const now = nowIn(settings.timezone);
-  const rows = db
-    .prepare(
-      `SELECT e.*, (SELECT COUNT(*) FROM document_events x WHERE x.event_id = e.id) AS document_count
-       FROM events e WHERE e.attestation_required = 1 AND e.status = 'scheduled' ORDER BY e.start`
-    )
-    .all();
+  const rows = await db.all(`${WITH_DOCS} WHERE e.attestation_required = 1 AND e.status = 'scheduled' ORDER BY e.start`);
   const out = { overdue: [], upcoming: [], received: [], waived: [] };
   for (const r of rows) {
     const ev = serializeEvent(r);
@@ -92,14 +84,14 @@ miscRouter.get('/attestations', (req, res) => {
   }
   out.received.reverse();
   out.waived.reverse();
-  res.json({ now, ...out, progress: categoryProgress(now) });
+  res.json({ now, ...out, progress: await categoryProgress(now) });
 });
 
 // ---------- Hours report ----------
 
-miscRouter.get('/stats/hours', (req, res) => {
-  const year = /^\d{4}$/.test(req.query.year) ? req.query.year : nowIn(getSettings().timezone).slice(0, 4);
-  const rows = db.prepare(`SELECT * FROM events WHERE substr(start, 1, 4) = ?`).all(year);
+miscRouter.get('/stats/hours', async (req, res) => {
+  const year = /^\d{4}$/.test(req.query.year) ? req.query.year : nowIn((await getSettings()).timezone).slice(0, 4);
+  const rows = await db.all('SELECT * FROM events WHERE substr(start, 1, 4) = ?', year);
   const byMonth = Array.from({ length: 12 }, () => ({}));
   const totals = {};
   for (const e of rows) {
@@ -115,7 +107,7 @@ miscRouter.get('/stats/hours', (req, res) => {
 
 // ---------- Search ----------
 
-miscRouter.get('/search', (req, res) => {
+miscRouter.get('/search', async (req, res) => {
   const { q = '', from, to, categoryId, kind, attestation, status } = req.query;
   const where = [];
   const args = [];
@@ -150,26 +142,27 @@ miscRouter.get('/search', (req, res) => {
     where.push('e.status = ?');
     args.push(status);
   }
-  const events = db
-    .prepare(
-      `SELECT e.*, (SELECT COUNT(*) FROM document_events x WHERE x.event_id = e.id) AS document_count
-       FROM events e LEFT JOIN categories c ON c.id = e.category_id
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY e.start DESC LIMIT 301`
-    )
-    .all(...args);
+  const events = await db.all(
+    `SELECT e.*, (SELECT COUNT(*) FROM document_events x WHERE x.event_id = e.id) AS document_count
+     FROM events e LEFT JOIN categories c ON c.id = e.category_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY e.start DESC LIMIT 301`,
+    ...args
+  );
 
   let documents = [];
   if (term) {
     const like = `%${term}%`;
-    documents = db
-      .prepare(
-        `SELECT d.*, c.name AS category_name, c.color AS category_color
-         FROM documents d LEFT JOIN categories c ON c.id = d.category_id
-         WHERE d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR c.name LIKE ? OR d.original_name LIKE ?
-         ORDER BY COALESCE(d.doc_date, d.created_at) DESC LIMIT 50`
-      )
-      .all(like, like, like, like, like)
-      .map(serializeDoc);
+    const rows = await db.all(
+      `${DOC_SELECT}
+       WHERE d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR c.name LIKE ? OR d.original_name LIKE ?
+       ORDER BY COALESCE(d.doc_date, d.created_at) DESC LIMIT 50`,
+      like,
+      like,
+      like,
+      like,
+      like
+    );
+    documents = await Promise.all(rows.map(serializeDoc));
   }
   const totalHours = events.slice(0, 300).reduce((s, e) => s + teachingHours(e), 0);
   res.json({
@@ -182,17 +175,19 @@ miscRouter.get('/search', (req, res) => {
 
 // ---------- Notifications ----------
 
-miscRouter.get('/notifications', (req, res) => {
-  const rows = db.prepare(`SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT 60`).all();
-  const unread = db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL').get().n;
-  const pending = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM events WHERE attestation_required = 1 AND attestation_status = 'pending' AND status = 'scheduled' AND end <= ?`
-    )
-    .get(nowIn(getSettings().timezone)).n;
+miscRouter.get('/notifications', async (req, res) => {
+  const now = nowIn((await getSettings()).timezone);
+  const [rows, unread, pending] = await Promise.all([
+    db.all('SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT 60'),
+    db.get('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL'),
+    db.get(
+      `SELECT COUNT(*) AS n FROM events WHERE attestation_required = 1 AND attestation_status = 'pending' AND status = 'scheduled' AND end <= ?`,
+      now
+    ),
+  ]);
   res.json({
-    unread,
-    pendingAttestations: pending,
+    unread: unread.n,
+    pendingAttestations: pending.n,
     items: rows.map((n) => ({
       id: n.id,
       type: n.type,
@@ -205,35 +200,37 @@ miscRouter.get('/notifications', (req, res) => {
   });
 });
 
-miscRouter.post('/notifications/read-all', (req, res) => {
-  db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL`).run();
+miscRouter.post('/notifications/read-all', async (req, res) => {
+  await db.run(`UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL`);
   res.json({ ok: true });
 });
 
-miscRouter.post('/notifications/:id/read', (req, res) => {
-  db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL`).run(parseInt(req.params.id, 10));
+miscRouter.post('/notifications/:id/read', async (req, res) => {
+  await db.run(`UPDATE notifications SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL`, parseInt(req.params.id, 10));
   res.json({ ok: true });
 });
 
 // ---------- Settings ----------
 
-function publicSettings() {
-  const s = getSettings();
+async function publicSettings() {
+  const s = await getSettings();
   return {
     ...s,
     smtp: { ...s.smtp, pass: s.smtp.pass ? '__unchanged__' : '' },
-    smtpConfigured: smtpConfigured(s),
-    recipient: recipient(s),
+    // When the hosting provides the email service, she never has to set up a mailbox herself.
+    emailManaged: emailManaged(),
+    smtpConfigured: emailConfigured(s),
+    recipient: await recipient(s),
   };
 }
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-miscRouter.get('/settings', (req, res) => res.json(publicSettings()));
+miscRouter.get('/settings', async (req, res) => res.json(await publicSettings()));
 
-miscRouter.put('/settings', (req, res) => {
+miscRouter.put('/settings', async (req, res) => {
   const b = req.body || {};
-  const current = getSettings();
+  const current = await getSettings();
   const patch = {};
   if (b.language !== undefined) patch.language = b.language === 'fr' ? 'fr' : 'en';
   if (b.theme !== undefined) patch.theme = ['light', 'dark', 'system'].includes(b.theme) ? b.theme : 'system';
@@ -248,14 +245,29 @@ miscRouter.put('/settings', (req, res) => {
       patch[k] = b[k];
     }
   }
-  if ((patch.dayStart || current.dayStart) >= (patch.dayEnd || current.dayEnd))
-    throw httpError(400, 'The day must end after it starts.');
+  if ((patch.dayStart || current.dayStart) >= (patch.dayEnd || current.dayEnd)) throw httpError(400, 'The day must end after it starts.');
   if (b.notifyEmail !== undefined) {
     const e = String(b.notifyEmail).trim();
     if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw httpError(400, 'Please enter a valid email address.');
     patch.notifyEmail = e;
   }
   if (b.emailEnabled !== undefined) patch.emailEnabled = !!b.emailEnabled;
+  if (b.appName !== undefined) patch.appName = String(b.appName).trim().slice(0, 40) || 'Planner';
+  if (b.accentColor !== undefined) {
+    if (!/^#[0-9a-f]{6}$/i.test(b.accentColor)) throw httpError(400, 'Invalid colour.');
+    patch.accentColor = b.accentColor.toLowerCase();
+  }
+  if (b.onboarding !== undefined) {
+    const o = b.onboarding;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw httpError(400, 'Invalid answers.');
+    if (JSON.stringify(o).length > 200000) throw httpError(400, 'Your answers are too long.');
+    patch.onboarding = {
+      completed: !!o.completed,
+      completedAt: o.completed ? o.completedAt || new Date().toISOString() : null,
+      step: Math.max(0, Math.min(20, parseInt(o.step, 10) || 0)),
+      answers: o.answers && typeof o.answers === 'object' ? o.answers : {},
+    };
+  }
   if (b.digestEnabled !== undefined) patch.digestEnabled = !!b.digestEnabled;
   if (b.nagIntervalHours !== undefined) {
     const n = Number(b.nagIntervalHours);
@@ -280,17 +292,17 @@ miscRouter.put('/settings', (req, res) => {
       from: String(s.from || '').trim(),
     };
   }
-  saveSettings(patch);
-  res.json(publicSettings());
+  await saveSettings(patch);
+  res.json(await publicSettings());
 });
 
 miscRouter.post('/settings/test-email', async (req, res) => {
-  const s = getSettings();
+  const s = await getSettings();
   const fr = s.language === 'fr';
   await sendMail(
     {
       subject: fr ? 'Test : vos emails fonctionnent' : 'Test: your emails are working',
-      html: layout({
+      html: await layout({
         heading: fr ? 'Tout fonctionne ✔' : 'Everything works ✔',
         intro: fr
           ? 'Vous recevrez vos rappels et vos attestations manquantes à cette adresse.'
@@ -300,11 +312,11 @@ miscRouter.post('/settings/test-email', async (req, res) => {
     },
     { throwOnError: true, force: true }
   );
-  res.json({ ok: true, to: recipient(s) });
+  res.json({ ok: true, to: await recipient(s) });
 });
 
-miscRouter.get('/settings/email-log', (req, res) => {
-  res.json(db.prepare('SELECT * FROM email_log ORDER BY id DESC LIMIT 30').all());
+miscRouter.get('/settings/email-log', async (req, res) => {
+  res.json(await db.all('SELECT * FROM email_log ORDER BY id DESC LIMIT 30'));
 });
 
 miscRouter.post('/scheduler/run', async (req, res) => {
@@ -319,10 +331,10 @@ function icsEscape(s) {
 }
 const icsDate = (w) => w.replace(/[-:]/g, '') + '00';
 
-miscRouter.get('/export/calendar.ics', (req, res) => {
-  const s = getSettings();
-  const cats = new Map(db.prepare('SELECT id, name FROM categories').all().map((c) => [c.id, c.name]));
-  const rows = db.prepare(`SELECT * FROM events WHERE status = 'scheduled' ORDER BY start`).all();
+miscRouter.get('/export/calendar.ics', async (req, res) => {
+  const s = await getSettings();
+  const cats = new Map((await db.all('SELECT id, name FROM categories')).map((c) => [c.id, c.name]));
+  const rows = await db.all(`SELECT * FROM events WHERE status = 'scheduled' ORDER BY start`);
   const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Planner//EN', 'CALSCALE:GREGORIAN', `X-WR-TIMEZONE:${s.timezone}`];
   for (const e of rows) {
@@ -334,9 +346,7 @@ miscRouter.get('/export/calendar.ics', (req, res) => {
     }
     lines.push(`SUMMARY:${icsEscape(e.title)}`);
     if (e.location) lines.push(`LOCATION:${icsEscape(e.location)}`);
-    const desc = [cats.get(e.category_id), e.notes, e.attestation_required ? `Attestation: ${e.attestation_status}` : '']
-      .filter(Boolean)
-      .join('\n');
+    const desc = [cats.get(e.category_id), e.notes, e.attestation_required ? `Attestation: ${e.attestation_status}` : ''].filter(Boolean).join('\n');
     if (desc) lines.push(`DESCRIPTION:${icsEscape(desc)}`);
     lines.push('END:VEVENT');
   }
@@ -346,10 +356,25 @@ miscRouter.get('/export/calendar.ics', (req, res) => {
   res.send(lines.join('\r\n'));
 });
 
+/**
+ * Full backup: every table as readable JSON (data.json) plus each scanned document as a real file,
+ * so the documents can be opened directly even without the app.
+ */
 miscRouter.get('/export/backup', async (req, res) => {
-  const tmp = path.join(os.tmpdir(), `planner-backup-${Date.now()}.db`);
-  db.prepare('VACUUM INTO ?').run(tmp);
-  const date = nowIn(getSettings().timezone).slice(0, 10);
+  const date = nowIn((await getSettings()).timezone).slice(0, 10);
+  const tables = ['users', 'settings', 'categories', 'series', 'events', 'holidays', 'documents', 'document_events', 'notifications'];
+  const data = { exportedAt: new Date().toISOString(), version: 1, tables: {} };
+  for (const t of tables) {
+    const rows = await db.all(t === 'documents' ? 'SELECT * FROM documents' : `SELECT * FROM ${t}`);
+    data.tables[t] = rows.map((r) => {
+      const copy = { ...r };
+      if (t === 'users') delete copy.password_hash;
+      if (t === 'settings' && copy.key === 'smtp') copy.value = '{"hidden":true}';
+      delete copy.file_data;
+      delete copy.thumb_data;
+      return copy;
+    });
+  }
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="planner-backup-${date}.zip"`);
   const archive = new ZipArchive({ zlib: { level: 6 } });
@@ -357,12 +382,17 @@ miscRouter.get('/export/backup', async (req, res) => {
     console.error('[backup]', err);
     res.destroy(err);
   });
-  res.on('close', () => fs.rm(tmp, { force: true }, () => {}));
   archive.pipe(res);
-  archive.file(tmp, { name: 'planner.db' });
-  archive.directory(UPLOAD_DIR, 'uploads');
+  archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
+  const docs = await db.all('SELECT id, title, mime FROM documents WHERE file_data IS NOT NULL');
+  const ext = { 'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
+  for (const d of docs) {
+    const { file_data: bytes } = await db.get('SELECT file_data FROM documents WHERE id = ?', d.id);
+    const safe = d.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 80) || 'document';
+    archive.append(Buffer.from(bytes), { name: `documents/${d.id} - ${safe}${ext[d.mime] || ''}` });
+  }
   archive.append(
-    'Planner backup\n\nTo restore: stop the app, replace data/planner.db with planner.db from this archive,\nand copy the "uploads" folder into data/. Then start the app again.\n',
+    'Planner backup\n\n- data.json: all appointments, institutions, attestations and settings (readable text).\n- documents/: every scanned document, ready to open.\n',
     { name: 'README.txt' }
   );
   await archive.finalize();

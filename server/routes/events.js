@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { db, transaction, getSettings } from '../db.js';
 import { normalizeRule, expand, httpError } from '../recurrence.js';
 import { isWallClock, addMinutes, diffMinutes, nowIn, datePart } from '../time.js';
-import { recomputeCategory } from '../attestation.js';
+import { recomputeCategory, TEACHING_KINDS } from '../attestation.js';
+import { cancellingHolidays, holidayFor } from './holidays.js';
 
 export const KINDS = ['class', 'exam', 'meeting', 'personal', 'other'];
 
@@ -26,6 +27,7 @@ export function serializeEvent(row, extra = {}) {
     allDay: !!row.all_day,
     notes: row.notes,
     status: row.status,
+    cancelReason: row.cancel_reason || null,
     reminders,
     attestation: {
       required: !!row.attestation_required,
@@ -56,7 +58,7 @@ function cleanReminders(list) {
 }
 
 /** Validates the editable fields of an event payload. Returns a column map. */
-function cleanFields(body, { partial = false } = {}) {
+async function cleanFields(body, { partial = false } = {}) {
   const f = {};
   if (!partial || body.title !== undefined) {
     const title = String(body.title ?? '').trim();
@@ -68,7 +70,7 @@ function cleanFields(body, { partial = false } = {}) {
   }
   if (!partial || body.categoryId !== undefined) {
     const id = body.categoryId ? parseInt(body.categoryId, 10) : null;
-    if (id && !db.prepare('SELECT id FROM categories WHERE id = ?').get(id)) throw httpError(400, 'That institution no longer exists.');
+    if (id && !(await db.get('SELECT id FROM categories WHERE id = ?', id))) throw httpError(400, 'That institution no longer exists.');
     f.category_id = id || null;
   }
   if (!partial || body.location !== undefined) f.location = String(body.location ?? '').trim().slice(0, 200);
@@ -90,7 +92,10 @@ function cleanFields(body, { partial = false } = {}) {
     f.end = end;
     f.all_day = allDay ? 1 : 0;
   }
-  if (body.status !== undefined) f.status = body.status === 'cancelled' ? 'cancelled' : 'scheduled';
+  if (body.status !== undefined) {
+    f.status = body.status === 'cancelled' ? 'cancelled' : 'scheduled';
+    f.cancel_reason = null;
+  }
   if (body.attestation !== undefined) {
     f._attestation = {
       required: !!body.attestation?.required,
@@ -130,118 +135,138 @@ function attestationColumns(att, row) {
   return cols;
 }
 
-function updateRow(id, cols) {
+async function updateRow(id, cols) {
   const keys = Object.keys(cols).filter((k) => !k.startsWith('_'));
   if (!keys.length) return;
-  db.prepare(`UPDATE events SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
+  await db.run(
+    `UPDATE events SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`,
     ...keys.map((k) => cols[k]),
     id
   );
 }
 
-function insertRow(cols) {
+async function insertRow(cols) {
   const keys = Object.keys(cols).filter((k) => !k.startsWith('_'));
-  const info = db
-    .prepare(`INSERT INTO events (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`)
-    .run(...keys.map((k) => cols[k]));
-  return Number(info.lastInsertRowid);
+  const info = await db.run(`INSERT INTO events (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`, ...keys.map((k) => cols[k]));
+  return info.lastInsertRowid;
 }
 
-function getRow(id) {
-  const row = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+/** Deletes sessions and everything that points to them (documents themselves are kept). */
+export async function deleteEvents(ids) {
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    const marks = chunk.map(() => '?').join(',');
+    await db.run(`DELETE FROM document_events WHERE event_id IN (${marks})`, ...chunk);
+    await db.run(`DELETE FROM notifications WHERE event_id IN (${marks})`, ...chunk);
+    await db.run(`DELETE FROM events WHERE id IN (${marks})`, ...chunk);
+  }
+}
+
+async function getRow(id) {
+  const row = await db.get('SELECT * FROM events WHERE id = ?', id);
   if (!row) throw httpError(404, 'This appointment no longer exists. It may have been deleted.');
   return row;
 }
 
 /** An occurrence is "protected" when it holds history that must survive regenerating a series. */
-function isProtected(row) {
+async function isProtected(row) {
   if (row.attestation_status === 'received' || row.attestation_status === 'waived') return true;
-  return db.prepare('SELECT COUNT(*) AS n FROM document_events WHERE event_id = ?').get(row.id).n > 0;
+  return (await db.get('SELECT COUNT(*) AS n FROM document_events WHERE event_id = ?', row.id)).n > 0;
 }
 
-function seriesTargets(row, scope) {
+async function seriesTargets(row, scope) {
   if (!row.series_id || scope === 'this') return [row];
-  if (scope === 'all') return db.prepare('SELECT * FROM events WHERE series_id = ? ORDER BY start').all(row.series_id);
-  return db.prepare('SELECT * FROM events WHERE series_id = ? AND start >= ? ORDER BY start').all(row.series_id, row.start);
+  if (scope === 'all') return db.all('SELECT * FROM events WHERE series_id = ? ORDER BY start', row.series_id);
+  return db.all('SELECT * FROM events WHERE series_id = ? AND start >= ? ORDER BY start', row.series_id, row.start);
 }
 
 /** Creates occurrences for `rule` starting at fields.start, skipping slots already taken by kept rows. */
-function createSeries(fields, rule, keptStarts = new Set()) {
+async function createSeries(fields, rule, keptStarts = new Set()) {
   const duration = diffMinutes(fields.start, fields.end);
   const starts = expand(fields.start, rule);
   if (!starts.length) throw httpError(400, 'No session matches this repetition. Check the days and the end date.');
-  const seriesId = Number(db.prepare('INSERT INTO series (rule) VALUES (?)').run(JSON.stringify(rule)).lastInsertRowid);
+  const seriesId = (await db.run('INSERT INTO series (rule) VALUES (?)', JSON.stringify(rule))).lastInsertRowid;
+  const holidays = TEACHING_KINDS.includes(fields.kind) ? await cancellingHolidays() : [];
   const ids = [];
   for (const start of starts) {
     if (keptStarts.has(start)) continue;
-    ids.push(insertRow({ ...fields, series_id: seriesId, start, end: addMinutes(start, duration) }));
+    const cols = { ...fields, series_id: seriesId, start, end: addMinutes(start, duration) };
+    // Classes that fall in a holiday are created already cancelled, and come back if the holiday is removed.
+    const holiday = holidayFor(holidays, start);
+    if (holiday) Object.assign(cols, { status: 'cancelled', cancel_reason: `holiday:${holiday.id}` });
+    ids.push(await insertRow(cols));
   }
   return { seriesId, ids };
 }
 
-function seriesRule(seriesId) {
+async function seriesRule(seriesId) {
   if (!seriesId) return null;
-  const s = db.prepare('SELECT rule FROM series WHERE id = ?').get(seriesId);
+  const s = await db.get('SELECT rule FROM series WHERE id = ?', seriesId);
   return s ? JSON.parse(s.rule) : null;
 }
 
-export function loadEvent(id) {
-  const row = getRow(id);
-  const documents = db
-    .prepare('SELECT d.id, d.title, d.mime, d.doc_date, d.created_at, d.thumb_name FROM document_events de JOIN documents d ON d.id = de.document_id WHERE de.event_id = ? ORDER BY d.created_at DESC')
-    .all(id);
-  const seriesCount = row.series_id
-    ? db.prepare('SELECT COUNT(*) AS n FROM events WHERE series_id = ?').get(row.series_id).n
-    : 0;
-  return serializeEvent(row, { rule: seriesRule(row.series_id), seriesCount, documents });
+export async function loadEvent(id) {
+  const row = await getRow(id);
+  const documents = await db.all(
+    `SELECT d.id, d.title, d.mime, d.doc_date, d.created_at, (d.thumb_name IS NOT NULL OR d.thumb_data IS NOT NULL) AS has_thumb
+     FROM document_events de JOIN documents d ON d.id = de.document_id WHERE de.event_id = ? ORDER BY d.created_at DESC`,
+    id
+  );
+  const seriesCount = row.series_id ? (await db.get('SELECT COUNT(*) AS n FROM events WHERE series_id = ?', row.series_id)).n : 0;
+  return serializeEvent(row, {
+    rule: await seriesRule(row.series_id),
+    seriesCount,
+    documents: documents.map((d) => ({ ...d, has_thumb: !!d.has_thumb })),
+  });
 }
+
+const markNotificationsRead = (eventId) =>
+  db.run(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`, eventId);
 
 export const eventsRouter = Router();
 
-eventsRouter.get('/', (req, res) => {
+eventsRouter.get('/', async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) throw httpError(400, 'A date range is required.');
   const from = String(start).slice(0, 16);
   const to = String(end).slice(0, 16);
-  const rows = db
-    .prepare(
-      `SELECT e.*, (SELECT COUNT(*) FROM document_events de WHERE de.event_id = e.id) AS document_count
-       FROM events e WHERE e.start < ? AND e.end > ? ORDER BY e.start`
-    )
-    .all(to, from);
+  const rows = await db.all(
+    `SELECT e.*, (SELECT COUNT(*) FROM document_events de WHERE de.event_id = e.id) AS document_count
+     FROM events e WHERE e.start < ? AND e.end > ? ORDER BY e.start`,
+    to,
+    from
+  );
   res.json(rows.map((r) => serializeEvent(r)));
 });
 
-eventsRouter.get('/:id', (req, res) => {
-  res.json(loadEvent(parseInt(req.params.id, 10)));
+eventsRouter.get('/:id', async (req, res) => {
+  res.json(await loadEvent(parseInt(req.params.id, 10)));
 });
 
-eventsRouter.post('/', (req, res) => {
-  const fields = cleanFields(req.body);
+eventsRouter.post('/', async (req, res) => {
+  const fields = await cleanFields(req.body);
   const rule = req.body.recurrence ? normalizeRule(req.body.recurrence) : null;
   const att = attestationColumns(fields._attestation, null);
   delete fields._attestation;
   const base = { ...fields, ...att };
-  const result = transaction(() => {
-    let ids;
-    if (rule) ids = createSeries(base, rule).ids;
-    else ids = [insertRow(base)];
-    recomputeCategory(base.category_id);
+  const result = await transaction(async () => {
+    const ids = rule ? (await createSeries(base, rule)).ids : [await insertRow(base)];
+    await recomputeCategory(base.category_id);
     return ids;
   });
-  res.status(201).json({ ids: result, event: loadEvent(result[0]), count: result.length });
+  res.status(201).json({ ids: result, event: await loadEvent(result[0]), count: result.length });
 });
 
-eventsRouter.put('/:id', (req, res) => {
+eventsRouter.put('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const scope = ['this', 'following', 'all'].includes(req.body.scope) ? req.body.scope : 'this';
-  const row = getRow(id);
-  const fields = cleanFields(req.body);
+  const row = await getRow(id);
+  const fields = await cleanFields(req.body);
   const att = fields._attestation;
   delete fields._attestation;
   const hasRecurrenceKey = Object.prototype.hasOwnProperty.call(req.body, 'recurrence');
   const newRule = req.body.recurrence ? normalizeRule(req.body.recurrence) : null;
-  const oldRule = seriesRule(row.series_id);
+  const oldRule = await seriesRule(row.series_id);
   const touchedCategories = new Set([row.category_id, fields.category_id]);
   // Attestation settings only spread to other sessions when she actually changed them here,
   // otherwise a single (or automatic) flag would be copied onto the whole series.
@@ -249,26 +274,26 @@ eventsRouter.put('/:id', (req, res) => {
   const attChanged = !!att && (att.required !== rowRequired || att.note !== row.attestation_note);
   const attForOthers = attChanged ? att : undefined;
 
-  const affected = transaction(() => {
+  const affected = await transaction(async () => {
     // Case 1: a single appointment that becomes repeating.
     if (!row.series_id) {
-      updateRow(id, { ...fields, ...attestationColumns(att, row) });
+      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
       if (newRule) {
-        const updated = getRow(id);
+        const updated = await getRow(id);
         const inherit = attChanged || row.attestation_source === 'manual' ? att : undefined;
-        const { seriesId } = createSeries(
+        const { seriesId } = await createSeries(
           { ...fields, ...attestationColumns(inherit, null), status: 'scheduled' },
           newRule,
           new Set([updated.start])
         );
-        db.prepare('UPDATE events SET series_id = ? WHERE id = ?').run(seriesId, id);
+        await db.run('UPDATE events SET series_id = ? WHERE id = ?', seriesId, id);
       }
       return [id];
     }
 
     // Case 2: only this occurrence.
     if (scope === 'this') {
-      updateRow(id, { ...fields, ...attestationColumns(att, row) });
+      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
       return [id];
     }
 
@@ -276,45 +301,41 @@ eventsRouter.put('/:id', (req, res) => {
 
     // Case 3: the repetition itself changed: rebuild this and following sessions.
     if (ruleChanged) {
-      const following = db.prepare('SELECT * FROM events WHERE series_id = ? AND start >= ?').all(row.series_id, row.start);
+      const following = await db.all('SELECT * FROM events WHERE series_id = ? AND start >= ?', row.series_id, row.start);
       const kept = new Set();
       const others = following.filter((e) => e.id !== id);
       const seriesWide = others.length > 0 && others.every((e) => e.attestation_required && e.attestation_source === 'manual');
       const inherit = attChanged ? att : seriesWide ? { required: true, note: att?.note ?? row.attestation_note } : undefined;
-      for (const e of following) {
+      const toDelete = [];
+      for (const e of others) {
         touchedCategories.add(e.category_id);
-        if (e.id !== id && isProtected(e)) {
-          db.prepare('UPDATE events SET series_id = NULL WHERE id = ?').run(e.id);
+        if (await isProtected(e)) {
+          await db.run('UPDATE events SET series_id = NULL WHERE id = ?', e.id);
           kept.add(e.start);
-        } else if (e.id !== id) {
-          db.prepare('DELETE FROM events WHERE id = ?').run(e.id);
-        }
+        } else toDelete.push(e.id);
       }
-      updateRow(id, { ...fields, ...attestationColumns(att, row) });
+      await deleteEvents(toDelete);
+      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
       if (oldRule) {
         // Close the old series the day before this session, for the record.
         const prevDay = new Date(datePart(row.start) + 'T00:00:00Z');
         prevDay.setUTCDate(prevDay.getUTCDate() - 1);
         const closed = { ...oldRule, until: prevDay.toISOString().slice(0, 10), count: null };
-        db.prepare('UPDATE series SET rule = ? WHERE id = ?').run(JSON.stringify(closed), row.series_id);
+        await db.run('UPDATE series SET rule = ? WHERE id = ?', JSON.stringify(closed), row.series_id);
       }
       if (newRule) {
-        const updated = getRow(id);
+        const updated = await getRow(id);
         kept.add(updated.start);
-        const { seriesId } = createSeries(
-          { ...fields, ...attestationColumns(inherit, null), status: 'scheduled' },
-          newRule,
-          kept
-        );
-        db.prepare('UPDATE events SET series_id = ? WHERE id = ?').run(seriesId, id);
+        const { seriesId } = await createSeries({ ...fields, ...attestationColumns(inherit, null), status: 'scheduled' }, newRule, kept);
+        await db.run('UPDATE events SET series_id = ? WHERE id = ?', seriesId, id);
       } else {
-        db.prepare('UPDATE events SET series_id = NULL WHERE id = ?').run(id);
+        await db.run('UPDATE events SET series_id = NULL WHERE id = ?', id);
       }
       return [id];
     }
 
     // Case 4: same repetition, apply the changes to this & following (or all) sessions.
-    const targets = seriesTargets(row, scope);
+    const targets = await seriesTargets(row, scope);
     const shift = diffMinutes(row.start, fields.start);
     const duration = diffMinutes(fields.start, fields.end);
     const timeChanged = shift !== 0 || duration !== diffMinutes(row.start, row.end) || fields.all_day !== row.all_day;
@@ -330,23 +351,24 @@ eventsRouter.put('/:id', (req, res) => {
           delete cols.end;
         }
         delete cols.status; // cancelling one session should not cancel the others
+        delete cols.cancel_reason;
       }
-      updateRow(t.id, cols);
+      await updateRow(t.id, cols);
     }
     return targets.map((t) => t.id);
   });
 
-  transaction(() => {
-    for (const c of touchedCategories) recomputeCategory(c);
+  await transaction(async () => {
+    for (const c of touchedCategories) await recomputeCategory(c);
   });
-  res.json({ event: loadEvent(id), affected: affected.length });
+  res.json({ event: await loadEvent(id), affected: affected.length });
 });
 
 /** Drag & drop / resize from the calendar. */
-eventsRouter.patch('/:id/move', (req, res) => {
+eventsRouter.patch('/:id/move', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const scope = req.body.scope === 'following' ? 'following' : 'this';
-  const row = getRow(id);
+  const row = await getRow(id);
   const allDay = req.body.allDay !== undefined ? !!req.body.allDay : !!row.all_day;
   let { start, end } = req.body;
   if (allDay) {
@@ -359,54 +381,57 @@ eventsRouter.patch('/:id/move', (req, res) => {
   if (!isWallClock(start) || !isWallClock(end) || end <= start) throw httpError(400, 'That move is not valid.');
   const shift = diffMinutes(row.start, start);
   const duration = diffMinutes(start, end);
-  const targets = seriesTargets(row, scope);
-  transaction(() => {
+  const targets = await seriesTargets(row, scope);
+  await transaction(async () => {
     for (const t of targets) {
       const s = t.id === id ? start : addMinutes(t.start, shift);
-      db.prepare(
-        `UPDATE events SET start = ?, end = ?, all_day = ?, attestation_last_nag_at = NULL, updated_at = datetime('now') WHERE id = ?`
-      ).run(s, addMinutes(s, duration), allDay ? 1 : 0, t.id);
+      await db.run(
+        `UPDATE events SET start = ?, end = ?, all_day = ?, attestation_last_nag_at = NULL, updated_at = datetime('now') WHERE id = ?`,
+        s,
+        addMinutes(s, duration),
+        allDay ? 1 : 0,
+        t.id
+      );
     }
-    recomputeCategory(row.category_id);
+    await recomputeCategory(row.category_id);
   });
-  res.json({ event: loadEvent(id), affected: targets.length });
+  res.json({ event: await loadEvent(id), affected: targets.length });
 });
 
-eventsRouter.delete('/:id', (req, res) => {
+eventsRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const scope = ['this', 'following', 'all'].includes(req.query.scope) ? req.query.scope : 'this';
   const mode = req.query.mode === 'cancel' ? 'cancel' : 'delete';
-  const row = getRow(id);
-  const targets = seriesTargets(row, scope);
-  transaction(() => {
-    for (const t of targets) {
-      if (mode === 'cancel') {
-        db.prepare(`UPDATE events SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`).run(t.id);
-      } else {
-        db.prepare('DELETE FROM events WHERE id = ?').run(t.id);
+  const row = await getRow(id);
+  const targets = await seriesTargets(row, scope);
+  await transaction(async () => {
+    if (mode === 'cancel') {
+      for (const t of targets) {
+        await db.run(`UPDATE events SET status = 'cancelled', cancel_reason = NULL, updated_at = datetime('now') WHERE id = ?`, t.id);
+      }
+    } else {
+      await deleteEvents(targets.map((t) => t.id));
+      if (row.series_id) {
+        const left = (await db.get('SELECT COUNT(*) AS n FROM events WHERE series_id = ?', row.series_id)).n;
+        if (!left) await db.run('DELETE FROM series WHERE id = ?', row.series_id);
       }
     }
-    if (mode === 'delete' && row.series_id) {
-      const left = db.prepare('SELECT COUNT(*) AS n FROM events WHERE series_id = ?').get(row.series_id).n;
-      if (!left) db.prepare('DELETE FROM series WHERE id = ?').run(row.series_id);
-    }
-    for (const c of new Set(targets.map((t) => t.category_id))) recomputeCategory(c);
+    for (const c of new Set(targets.map((t) => t.category_id))) await recomputeCategory(c);
   });
   res.json({ ok: true, affected: targets.length });
 });
 
 /** Every attestation state change goes through here. */
-eventsRouter.post('/:id/attestation', (req, res) => {
+eventsRouter.post('/:id/attestation', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = getRow(id);
+  const row = await getRow(id);
   const { action } = req.body || {};
-  const settings = getSettings();
-  const now = nowIn(settings.timezone);
+  const now = nowIn((await getSettings()).timezone);
 
-  transaction(() => {
+  await transaction(async () => {
     switch (action) {
       case 'require':
-        updateRow(id, {
+        await updateRow(id, {
           attestation_required: 1,
           attestation_source: 'manual',
           attestation_status: row.attestation_status === 'received' ? 'received' : 'pending',
@@ -414,37 +439,35 @@ eventsRouter.post('/:id/attestation', (req, res) => {
         });
         break;
       case 'received': {
-        if (!row.attestation_required) {
-          updateRow(id, { attestation_required: 1, attestation_source: 'manual' });
-        }
-        updateRow(id, { attestation_status: 'received', attestation_received_at: now, attestation_snoozed_until: null });
+        if (!row.attestation_required) await updateRow(id, { attestation_required: 1, attestation_source: 'manual' });
+        await updateRow(id, { attestation_status: 'received', attestation_received_at: now, attestation_snoozed_until: null });
         const docId = req.body.documentId ? parseInt(req.body.documentId, 10) : null;
         if (docId) {
-          if (!db.prepare('SELECT id FROM documents WHERE id = ?').get(docId)) throw httpError(400, 'That document no longer exists.');
-          db.prepare('INSERT OR IGNORE INTO document_events (document_id, event_id) VALUES (?, ?)').run(docId, id);
+          if (!(await db.get('SELECT id FROM documents WHERE id = ?', docId))) throw httpError(400, 'That document no longer exists.');
+          await db.run('INSERT OR IGNORE INTO document_events (document_id, event_id) VALUES (?, ?)', docId, id);
         }
-        db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`).run(id);
+        await markNotificationsRead(id);
         break;
       }
       case 'pending':
         if (!row.attestation_required) throw httpError(400, 'No attestation is required for this appointment.');
-        updateRow(id, { attestation_status: 'pending', attestation_received_at: null, attestation_last_nag_at: null });
+        await updateRow(id, { attestation_status: 'pending', attestation_received_at: null, attestation_last_nag_at: null });
         break;
       case 'waived':
         if (!row.attestation_required) throw httpError(400, 'No attestation is required for this appointment.');
-        updateRow(id, { attestation_status: 'waived', attestation_snoozed_until: null });
-        db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`).run(id);
+        await updateRow(id, { attestation_status: 'waived', attestation_snoozed_until: null });
+        await markNotificationsRead(id);
         break;
       case 'snooze': {
         const hours = Math.max(1, Math.min(24 * 7, parseInt(req.body.hours, 10) || 24));
-        updateRow(id, { attestation_snoozed_until: addMinutes(now, hours * 60) });
+        await updateRow(id, { attestation_snoozed_until: addMinutes(now, hours * 60) });
         break;
       }
       case 'remove':
         if (row.attestation_source === 'auto' && row.attestation_status === 'pending') {
-          updateRow(id, { attestation_status: 'waived' });
+          await updateRow(id, { attestation_status: 'waived' });
         } else {
-          updateRow(id, {
+          await updateRow(id, {
             attestation_required: 0,
             attestation_source: null,
             attestation_status: null,
@@ -457,35 +480,35 @@ eventsRouter.post('/:id/attestation', (req, res) => {
       default:
         throw httpError(400, 'Unknown action.');
     }
-    recomputeCategory(row.category_id);
+    await recomputeCategory(row.category_id);
   });
-  res.json({ event: loadEvent(id) });
+  res.json({ event: await loadEvent(id) });
 });
 
 /** Same actions for several sessions at once (one attestation often covers many sessions). */
-eventsRouter.post('/bulk-attestation', (req, res) => {
+eventsRouter.post('/bulk-attestation', async (req, res) => {
   const { ids, action } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) throw httpError(400, 'Select at least one session.');
   if (!['received', 'waived', 'snooze'].includes(action)) throw httpError(400, 'Unknown action.');
-  const now = nowIn(getSettings().timezone);
+  const now = nowIn((await getSettings()).timezone);
   const hours = Math.max(1, Math.min(24 * 7, parseInt(req.body.hours, 10) || 24));
   const categories = new Set();
-  transaction(() => {
+  await transaction(async () => {
     for (const raw of ids) {
-      const row = db.prepare('SELECT * FROM events WHERE id = ?').get(parseInt(raw, 10));
+      const row = await db.get('SELECT * FROM events WHERE id = ?', parseInt(raw, 10));
       if (!row || !row.attestation_required) continue;
       categories.add(row.category_id);
-      if (action === 'snooze') updateRow(row.id, { attestation_snoozed_until: addMinutes(now, hours * 60) });
+      if (action === 'snooze') await updateRow(row.id, { attestation_snoozed_until: addMinutes(now, hours * 60) });
       else {
-        updateRow(row.id, {
+        await updateRow(row.id, {
           attestation_status: action,
           attestation_received_at: action === 'received' ? now : row.attestation_received_at,
           attestation_snoozed_until: null,
         });
-        db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`).run(row.id);
+        await markNotificationsRead(row.id);
       }
     }
-    for (const c of categories) recomputeCategory(c);
+    for (const c of categories) await recomputeCategory(c);
   });
   res.json({ ok: true });
 });

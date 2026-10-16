@@ -1,0 +1,33 @@
+# Render Blueprint: free web service, data kept in a free Turso database.
+# In Render: New + → Blueprint → pick this repository, then fill in the values marked "sync: false".
+services:
+  - type: web
+    name: teacher-planner
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY
+        value: "1"
+      # Turso database URL (libsql://...) and its token.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_AUTH_TOKEN
+        sync: false
+      # The code the teacher types once to create her account.
+      - key: SETUP_CODE
+        sync: false
+      # Public address of this service, used in email links, e.g. https://teacher-planner.onrender.com
+      - key: APP_URL
+        sync: false
+      # Brevo (free plan) for reminder emails: API key + a sender address verified in Brevo.
+      - key: BREVO_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

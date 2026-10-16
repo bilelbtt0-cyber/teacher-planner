@@ -1,6 +1,6 @@
 import { api, setUnauthorizedHandler } from './api.js';
 import { t, tn, timeAgo, setLanguage } from './i18n.js';
-import { state, subscribe, loadSettings, loadCategories, startPolling, stopPolling, refreshNotifications, applyTheme } from './store.js';
+import { state, subscribe, loadSettings, loadCategories, startPolling, stopPolling, refreshNotifications, applyTheme, appName } from './store.js';
 import { esc, el, icon, on, toast, errorToast, setBusy, hasOpenModal, initials } from './ui.js';
 import { openEventForm, openEventDetails } from './eventForm.js';
 
@@ -11,6 +11,7 @@ const ROUTES = {
   documents: { title: 'My documents', icon: 'folder', load: () => import('./views/documents.js') },
   search: { title: 'Search & history', icon: 'search', load: () => import('./views/search.js') },
   settings: { title: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
+  welcome: { title: 'Welcome', icon: 'sparkles', load: () => import('./views/welcome.js') },
 };
 const NAV = ['today', 'calendar', 'attestations', 'documents', 'search'];
 
@@ -40,6 +41,7 @@ async function boot() {
   }
   // Use the browser language until the user's own preference is loaded.
   setLanguage(navigator.language?.startsWith('fr') ? 'fr' : 'en');
+  setupCodeRequired = !!me.setupCodeRequired;
   if (me.setupRequired) return showAuth('setup');
   if (!me.authenticated) return showAuth('login');
   state.user = me.user;
@@ -60,6 +62,8 @@ async function startApp() {
 }
 
 // ---------- Auth screens ----------
+
+let setupCodeRequired = false;
 
 function showAuth(mode) {
   window.removeEventListener('hashchange', route);
@@ -88,7 +92,14 @@ function showAuth(mode) {
             <p>${esc(setup ? t('Create your private account. It only takes a minute.') : t('Sign in to see your schedule.'))}</p>
           </div>
           <div class="form-error" hidden></div>
-          ${setup ? `<div class="field"><label for="a-name">${esc(t('Your name'))}</label><input class="input" id="a-name" name="name" autocomplete="name" required autofocus></div>` : ''}
+          ${
+            setup && setupCodeRequired
+              ? `<div class="field"><label for="a-code">${esc(t('Invitation code'))}</label>
+                <input class="input" id="a-code" name="setupCode" autocomplete="off" required autofocus>
+                <span class="hint">${esc(t('The code you received with the link.'))}</span></div>`
+              : ''
+          }
+          ${setup ? `<div class="field"><label for="a-name">${esc(t('Your name'))}</label><input class="input" id="a-name" name="name" autocomplete="name" required ${setupCodeRequired ? '' : 'autofocus'}></div>` : ''}
           <div class="field"><label for="a-email">${esc(t('Email'))}</label>
             <input class="input" id="a-email" name="email" type="email" autocomplete="email" required ${setup ? '' : 'autofocus'}>
             ${setup ? `<span class="hint">${esc(t('Reminders will be sent to this address.'))}</span>` : ''}</div>
@@ -117,9 +128,8 @@ function showAuth(mode) {
       }
       const me = await api.get('/api/auth/me');
       state.user = me.user;
-      if (setup) location.hash = '#/today';
+      if (setup) location.hash = '#/welcome';
       await startApp();
-      if (setup) setTimeout(() => toast(t('Your planner is ready. Start by adding your institutions in Settings, then your classes.'), { duration: 8000 }), 400);
     } catch (err) {
       errBox.innerHTML = `${icon('alertCircle')}<span>${esc(err.message === 'offline' ? t('Cannot reach the app. Is it still running?') : t(err.message))}</span>`;
       errBox.hidden = false;
@@ -145,7 +155,7 @@ function renderShell() {
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand"><div class="brand-logo">${icon('calendar')}</div>
-          <div><div class="brand-name">Planner</div><div class="brand-sub">${esc(t('Schedule & attestations'))}</div></div></div>
+          <div style="min-width:0"><div class="brand-name ellipsis" data-app-name>${esc(appName())}</div><div class="brand-sub">${esc(t('Schedule & attestations'))}</div></div></div>
         <nav class="nav">${NAV.map((k) => navLink(k)).join('')}</nav>
         <div class="sidebar-footer">
           <button class="btn primary sidebar-cta" data-new>${icon('plus')}${esc(t('New appointment'))}</button>
@@ -191,6 +201,7 @@ function renderShell() {
 }
 
 subscribe((what) => {
+  if (what === 'settings') updateBadges();
   if (what === 'notifications') {
     updateBadges();
     if (panel) renderNotifItems();
@@ -215,7 +226,8 @@ function updateBadges() {
     dot.hidden = !unread;
     dot.textContent = unread > 9 ? '9+' : unread;
   }
-  document.title = pendingAttestations ? `(${pendingAttestations}) Planner` : 'Planner';
+  document.title = pendingAttestations ? `(${pendingAttestations}) ${appName()}` : appName();
+  app.querySelectorAll('[data-app-name]').forEach((n) => (n.textContent = appName()));
   renderBanner();
 }
 
@@ -225,7 +237,7 @@ function renderBanner() {
   if (!view) return;
   let banner = document.querySelector('.att-banner');
   const n = state.notifications.pendingAttestations;
-  if (!n || currentRoute === 'attestations') {
+  if (!n || currentRoute === 'attestations' || currentRoute === 'welcome') {
     banner?.remove();
     return;
   }
@@ -308,6 +320,7 @@ async function route(force) {
     return;
   }
   currentRoute = name;
+  document.body.classList.toggle('route-welcome', name === 'welcome');
   const token = ++renderToken;
   const r = ROUTES[name];
   closeNotifPanel();

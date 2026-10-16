@@ -1,12 +1,14 @@
 import { api } from '../api.js';
-import { t, tn, reminderLabel, timeAgo, hoursLabel, dateToWall } from '../i18n.js';
+import { t, tn, reminderLabel, timeAgo, hoursLabel, dateToWall, fmtDate } from '../i18n.js';
 import { state, subscribe, loadSettings, loadCategories, changed, emit } from '../store.js';
-import { esc, icon, on, toast, errorToast, setBusy, confirmDialog, initials } from '../ui.js';
-import { openCategoryForm } from '../eventForm.js';
+import { esc, icon, on, toast, errorToast, setBusy, confirmDialog, initials, CATEGORY_COLORS } from '../ui.js';
+import { openCategoryForm, ruleDescription, categoryPayload } from '../eventForm.js';
 
 const SECTIONS = [
+  { id: 'personal', label: 'Personalisation', icon: 'sparkles' },
   { id: 'profile', label: 'Profile', icon: 'user' },
   { id: 'institutions', label: 'Institutions', icon: 'building' },
+  { id: 'holidays', label: 'Holidays', icon: 'sun' },
   { id: 'notifications', label: 'Reminders', icon: 'bell' },
   { id: 'email', label: 'Email', icon: 'mail' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
@@ -49,7 +51,17 @@ export async function render(root, params) {
     const cats = state.categories;
     const notifPerm = 'Notification' in window ? Notification.permission : 'unsupported';
 
+    const ob = s.onboarding || {};
     box.innerHTML = `
+      <section class="card settings-section" id="sec-personal">
+        <div class="card-header"><div style="flex:1"><h2>${esc(t('Personalisation'))}</h2><p>${esc(t('The welcome guide sets up your institutions, timetable and reminders from your answers.'))}</p></div>
+          ${ob.completed ? `<span class="chip success">${icon('check')}${esc(t('Completed'))}</span>` : `<span class="chip warning">${esc(t('Not finished'))}</span>`}</div>
+        <div class="card-body flex wrap">
+          <a class="btn primary" href="#/welcome">${icon('sparkles', 'sm')}${esc(ob.completed ? t('Open the welcome guide again') : t('Continue the welcome guide'))}</a>
+          <button class="btn" data-answers>${icon('fileText', 'sm')}${esc(t('See all my answers'))}</button>
+        </div>
+      </section>
+
       <section class="card settings-section" id="sec-profile">
         <div class="card-header"><div><h2>${esc(t('Profile'))}</h2><p>${esc(t('Your name, sign-in email and password.'))}</p></div></div>
         <div class="card-body">
@@ -81,7 +93,7 @@ export async function render(root, params) {
                     (c) => `<div class="cat-row" style="${c.archived ? 'opacity:.55' : ''}">
                 <span class="cat-dot" style="background:${c.color};width:14px;height:14px"></span>
                 <div style="flex:1;min-width:0"><div class="name">${esc(c.name)} ${c.archived ? `<span class="chip muted">${esc(t('Archived'))}</span>` : ''}</div>
-                  <div class="small muted">${c.attestationEveryHours ? `${icon('attestation', 'sm')} ${esc(t('Attestation every {h}', { h: hoursLabel(c.attestationEveryHours) }))} · ` : ''}${esc(tn(c.eventCount, '{n} appointment', '{n} appointments'))}</div></div>
+                  <div class="small muted">${c.attestationMode ? `${icon('attestation', 'sm')} ${esc(ruleDescription(c))} · ` : ''}${esc(tn(c.eventCount, '{n} appointment', '{n} appointments'))}</div></div>
                 <button class="btn ghost sm" data-edit-cat="${c.id}">${icon('edit', 'sm')}<span>${esc(t('Edit'))}</span></button>
                 <button class="btn ghost sm icon-only" data-archive-cat="${c.id}" title="${esc(c.archived ? t('Restore') : t('Archive'))}">${icon(c.archived ? 'undo' : 'inbox', 'sm')}</button>
                 <button class="btn ghost sm icon-only" data-del-cat="${c.id}" title="${esc(t('Delete'))}" style="color:var(--danger-text)">${icon('trash', 'sm')}</button>
@@ -90,6 +102,26 @@ export async function render(root, params) {
                   .join('')
               : `<div class="empty" style="padding:20px">${esc(t('No institution yet. Add the schools or centres where you teach.'))}<br><button class="btn primary" data-new-cat style="margin-top:12px">${icon('plus')}${esc(t('Add an institution'))}</button></div>`
           }
+        </div>
+      </section>
+
+      <section class="card settings-section" id="sec-holidays">
+        <div class="card-header"><div><h2>${esc(t('Holidays'))}</h2><p>${esc(t('Classes during a holiday are cancelled automatically, and come back if you remove the holiday.'))}</p></div></div>
+        <div class="card-body">
+          ${holidays
+            .map(
+              (h) => `<div class="cat-row"><span style="color:var(--warning-text)">${icon('sun', 'sm')}</span>
+              <div style="flex:1;min-width:0"><div class="name">${esc(h.name)}</div>
+              <div class="small muted">${esc(fmtDate(h.start))} → ${esc(fmtDate(h.end))}${h.cancelClasses ? ` · ${esc(tn(h.cancelledCount || 0, '{n} class cancelled', '{n} classes cancelled'))}` : ''}</div></div>
+              <button class="btn ghost sm icon-only" data-del-hol="${h.id}" title="${esc(t('Delete'))}" style="color:var(--danger-text)">${icon('trash', 'sm')}</button></div>`
+            )
+            .join('')}
+          <form class="flex wrap" data-holiday-form style="margin-top:${holidays.length ? '14px' : '0'}" novalidate>
+            <input class="input" name="name" placeholder="${esc(t('e.g. Winter holidays'))}" style="flex:1;min-width:160px">
+            <input class="input" type="date" name="start" style="width:auto"><span class="muted">→</span><input class="input" type="date" name="end" style="width:auto">
+            <label class="switch"><input type="checkbox" name="cancel" checked><span class="track"></span>${esc(t('Cancel classes'))}</label>
+            <button class="btn soft" type="submit">${icon('plus', 'sm')}${esc(t('Add'))}</button>
+          </form>
         </div>
       </section>
 
@@ -126,7 +158,14 @@ export async function render(root, params) {
             <div class="control"><label class="switch"><input type="checkbox" data-setting-bool="emailEnabled" ${s.emailEnabled ? 'checked' : ''}><span class="track"></span></label></div></div>
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Send reminders to'))}</div><div class="d">${esc(t('Leave empty to use your sign-in email.'))}</div></div>
             <div class="control"><input class="input" type="email" data-setting="notifyEmail" value="${esc(s.notifyEmail)}" placeholder="${esc(u.email)}" style="width:260px"></div></div>
-          <form class="stack" data-smtp novalidate style="border-top:1px solid var(--border);padding-top:16px">
+          ${
+            s.emailManaged
+              ? `<div class="tip" style="margin-top:6px">${icon('checkCircle')}<span>${esc(t('Emails are sent by the planner’s own email service. There is nothing to set up.'))}</span></div>
+                <div class="flex wrap" style="margin-top:12px"><button class="btn" type="button" data-test-email>${icon('mail', 'sm')}${esc(t('Send a test email'))}</button>
+                <span class="small muted">${esc(t('to {e}', { e: s.recipient || u.email }))}</span></div>`
+              : ''
+          }
+          <form class="stack" data-smtp novalidate style="border-top:1px solid var(--border);padding-top:16px" ${s.emailManaged ? 'hidden' : ''}>
             <div class="flex wrap"><span class="label">${esc(t('Sending account (SMTP)'))}</span><span class="spacer"></span>
               <span class="small muted">${esc(t('Quick setup:'))}</span>
               <button type="button" class="pill" data-preset="gmail">Gmail</button><button type="button" class="pill" data-preset="outlook">Outlook</button><button type="button" class="pill" data-preset="yahoo">Yahoo</button></div>
@@ -156,6 +195,12 @@ export async function render(root, params) {
         <div class="card-body">
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Language'))}</div></div>
             <div class="control"><div class="segmented"><button data-lang="fr" class="${s.language === 'fr' ? 'active' : ''}">Français</button><button data-lang="en" class="${s.language === 'en' ? 'active' : ''}">English</button></div></div></div>
+          <div class="setting-row"><div class="info"><div class="t">${esc(t('Name of your planner'))}</div><div class="d">${esc(t('Shown at the top of the app and in your emails.'))}</div></div>
+            <div class="control"><input class="input" data-setting="appName" value="${esc(s.appName || 'Planner')}" maxlength="40" style="width:220px"></div></div>
+          <div class="setting-row"><div class="info"><div class="t">${esc(t('Your colour'))}</div></div>
+            <div class="control"><div class="color-swatches">${CATEGORY_COLORS.slice(0, 9)
+              .map((c) => `<button type="button" class="swatch ${c === (s.accentColor || '#5b5bd6') ? 'active' : ''}" data-accent="${c}" style="background:${c}" aria-label="${c}"></button>`)
+              .join('')}</div></div></div>
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Theme'))}</div></div>
             <div class="control"><div class="segmented">${['system', 'light', 'dark']
               .map((th) => `<button data-theme-opt="${th}" class="${s.theme === th ? 'active' : ''}">${esc(t(th === 'system' ? 'Automatic' : th === 'light' ? 'Light' : 'Dark'))}</button>`)
@@ -297,7 +342,7 @@ export async function render(root, params) {
   on(box, 'click', '[data-archive-cat]', async (e, b) => {
     const c = state.categories.find((x) => x.id === Number(b.dataset.archiveCat));
     try {
-      await api.put(`/api/categories/${c.id}`, { name: c.name, color: c.color, attestationEveryHours: c.attestationEveryHours, archived: !c.archived });
+      await api.put(`/api/categories/${c.id}`, categoryPayload(c, { archived: !c.archived }));
       await loadCategories();
       changed();
       toast(c.archived ? t('Institution restored') : t('Institution archived. Its history is kept.'));
@@ -349,10 +394,62 @@ export async function render(root, params) {
     }
   }
 
+  // ----- personalisation, holidays, colour -----
+  on(box, 'click', '[data-answers]', async () => {
+    const { openAnswersSummary } = await import('./welcome.js');
+    openAnswersSummary();
+  });
+  on(box, 'click', '[data-accent]', async (e, b) => {
+    await saveSettings({ accentColor: b.dataset.accent });
+  });
+  on(box, 'click', '[data-del-hol]', async (e, b) => {
+    const h = holidays.find((x) => x.id === Number(b.dataset.delHol));
+    const ok = await confirmDialog({
+      title: t('Delete “{name}”?', { name: h.name }),
+      message: esc(h.cancelledCount ? tn(h.cancelledCount, 'The {n} cancelled class will be scheduled again.', 'The {n} cancelled classes will be scheduled again.') : t('This cannot be undone.')),
+      confirm: t('Delete'),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.del(`/api/holidays/${h.id}`);
+      await loadHolidays();
+      changed();
+    } catch (err) {
+      errorToast(err);
+    }
+  });
+  box.addEventListener('submit', async (e) => {
+    if (!e.target.matches('[data-holiday-form]')) return;
+    const f = e.target;
+    const btn = f.querySelector('[type=submit]');
+    setBusy(btn, true);
+    try {
+      const res = await api.post('/api/holidays', { name: f.name.value, start: f.start.value, end: f.end.value || f.start.value, cancelClasses: f.cancel.checked });
+      toast(res.cancelled ? tn(res.cancelled, 'Holiday added · {n} class cancelled', 'Holiday added · {n} classes cancelled') : t('Holiday added'), { type: 'success' });
+      await loadHolidays();
+      changed();
+    } catch (err) {
+      setBusy(btn, false);
+      errorToast(err);
+    }
+  });
+
+  async function loadHolidays() {
+    try {
+      holidays = await api.get('/api/holidays');
+    } catch {
+      holidays = [];
+    }
+    draw();
+  }
+
   const unsub = subscribe((what) => {
     if (what === 'categories' || what === 'settings') draw();
   });
+  let holidays = [];
   draw();
+  loadHolidays();
   if (params.s) setTimeout(() => document.getElementById(`sec-${params.s}`)?.scrollIntoView({ block: 'start' }), 50);
   return unsub;
 }

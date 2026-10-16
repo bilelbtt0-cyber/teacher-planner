@@ -8,7 +8,7 @@ The interface is available in French and English (chosen at first launch; can be
 
 ## Run it (local)
 
-**Requirement:** [Node.js](https://nodejs.org) version 22.13 or newer (Node 24 recommended).
+**Requirement:** [Node.js](https://nodejs.org) version 20 or newer.
 
 - **Windows:** double-click **`Start Planner.bat`**. It installs dependencies the first time, starts the app and opens the browser.
 - **Any OS:**
@@ -50,35 +50,56 @@ Emails sent by the app:
 - **missing attestations**, at the end of the session and then every *N* hours (default: daily), outside quiet hours. A single email lists everything still missing;
 - an optional **morning summary** (today's schedule + missing attestations).
 
-> Reminders are sent by the running app. While the app runs on a laptop, emails only go out when the laptop is on and the app is open. Missed reminders are caught up when it starts again. Hosting removes this limitation.
+> On a computer, reminders go out only while the app is running (missed ones are caught up when it starts). Online, the app runs all the time and emails go through Brevo: see below.
 
 ---
 
 ## Data & backup
 
-- Everything lives in the **`data/`** folder: `planner.db` (SQLite database) and `uploads/` (scans).
-- Settings → Data → **Download backup** produces a `.zip` with both.
-- **Restore:** stop the app, put `planner.db` and the `uploads` folder from the zip into `data/`, start again.
+- **Locally**, everything lives in `data/planner.db`, scanned documents included.
+- **Online**, everything lives in the Turso database (Turso also keeps its own short-term restore points).
+- Settings → Data → **Download backup** gives a `.zip` with `data.json` (all appointments, institutions, attestations, settings, readable) and a `documents/` folder holding every scan as a real PDF or image.
 
 ---
 
-## Hosting later
+## Put it online for free
 
-The app is a single Node.js process with no external database, so any small VPS or Node host works.
+Everything below uses free plans and needs no credit card. Render and Turso let you sign in with GitHub.
+
+| Piece | Service (free plan) | Role |
+|---|---|---|
+| App | [Render](https://render.com) web service | Runs the site, redeploys automatically on every push to `main` |
+| Data | [Turso](https://turso.tech) database | Keeps all data and scans (Render's free disk is wiped on restart) |
+| Emails | [Brevo](https://www.brevo.com) | Sends reminder emails through its web API (Render's free plan blocks email ports) |
+| Wake-up | [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) | Calls `/api/health` every 10 minutes so the app never sleeps and reminders go out on time |
+
+### Steps
+
+1. **Turso**: create a database (region close to Tunisia, e.g. Frankfurt). Copy its URL (`libsql://…`) and create a token.
+2. **Brevo** (optional, for emails): Senders → add and verify the address emails will come from. SMTP & API → create an API key.
+3. **Render**: New + → **Blueprint** → choose this repository. Fill in:
+
+   | Variable | Value |
+   |---|---|
+   | `DATABASE_URL` | the Turso URL |
+   | `DATABASE_AUTH_TOKEN` | the Turso token |
+   | `SETUP_CODE` | a code you choose and give to the teacher (she types it once to create her account) |
+   | `APP_URL` | the Render address, e.g. `https://teacher-planner.onrender.com` (set it after the first deploy if needed) |
+   | `BREVO_API_KEY`, `EMAIL_FROM` | the Brevo key and the verified sender, e.g. `Agenda <agenda@gmail.com>` |
+
+4. **Pinger**: create a job that opens `https://<your-app>.onrender.com/api/health` every 10 minutes.
+5. Send the teacher the link and the invitation code. The welcome guide does the rest.
+
+Limits to know: Render's free plan gives 750 hours a month, enough for one service running all month. After a deploy, the first visit can take about a minute while the service starts.
+
+### Other variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `3000` | HTTP port |
-| `HOST` | `0.0.0.0` | Listen address |
-| `APP_URL` | `http://localhost:PORT` | Public URL used in email links (e.g. `https://planner.example.com`) |
-| `DATA_DIR` | `./data` | Where the database and scans are stored (put it on a persistent disk) |
-
-Checklist:
-1. Copy the project (with `data/` to keep existing data), then run `npm install --omit=dev`.
-2. Run it with a process manager so it restarts automatically, e.g. `pm2 start "npm start" --name planner`.
-3. Put it behind HTTPS (Caddy / Nginx / the host's proxy). HTTPS is required for the live camera scanner on phones, and cookies are automatically marked `Secure`.
-4. Set `APP_URL` to the public address.
-5. Back up `DATA_DIR` regularly.
+| `PORT` | `3000` | HTTP port (set automatically by Render) |
+| `DATA_DIR` | `./data` | Local database folder when `DATABASE_URL` is not set |
+| `TRUST_PROXY` | – | Set to `1` behind a hosting proxy |
+| SMTP | in Settings | Used instead of Brevo when the app runs on a computer |
 
 ---
 
@@ -87,20 +108,20 @@ Checklist:
 ```
 server/
   index.js          Express app, static files, error handling
-  db.js             SQLite schema (migrations) and settings
+  db.js             Database (local SQLite file or Turso online), migrations, settings
   auth.js           Account setup, login, sessions (scrypt + HttpOnly cookie)
   time.js           Wall-clock time helpers (user time zone)
   recurrence.js     Repetition rules → occurrences
   attestation.js    "Every N hours" rule engine and progress
   scheduler.js      Reminders, attestation nagging, morning summary (every minute)
-  mailer.js         SMTP sending + email templates
-  routes/           events, categories (institutions), documents, misc (dashboard, search, settings, export)
+  mailer.js         Email via SMTP (local) or Brevo API (online) + templates
+  routes/           events, categories (institutions), holidays, documents, misc (dashboard, search, settings, export)
 public/
   index.html, css/app.css
   js/app.js         Shell, router, notifications panel, banner
   js/eventForm.js   Appointment editor, details panel, attestation actions
   js/scanner.js     Camera / upload, page editor, PDF generation
-  js/views/         today, calendar, attestations, documents, search, settings
+  js/views/         welcome (guide), today, calendar, attestations, documents, search, settings
   js/i18n.js, fr.js Translations and date formatting
 ```
 

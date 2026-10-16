@@ -115,12 +115,43 @@ export function askScope(action, { allowAll = true } = {}) {
   return chooseDialog({ title: titles[action], message: t('This appointment is part of a repeating series.'), choices });
 }
 
-// ---------- Institution quick-create ----------
+// ---------- Institutions ----------
+
+export const RULE_MODES = [
+  { value: '', label: 'No automatic rule' },
+  { value: 'hours', label: 'Every N teaching hours' },
+  { value: 'session', label: 'After each session' },
+  { value: 'monthly', label: 'Once a month (last class)' },
+];
+
+/** One sentence describing an institution's attestation rule, or '' when it has none. */
+export function ruleDescription(cat) {
+  if (!cat?.attestationMode) return '';
+  if (cat.attestationMode === 'hours') return t('{name}: one attestation every {n} teaching hours.', { name: cat.name, n: cat.attestationEveryHours });
+  if (cat.attestationMode === 'session') return t('{name}: one attestation for each session.', { name: cat.name });
+  return t('{name}: one attestation each month, at the last class.', { name: cat.name });
+}
+
+/** Full payload for saving an institution, so no field is lost when only one changes. */
+export function categoryPayload(c, overrides = {}) {
+  return {
+    name: c.name,
+    color: c.color,
+    attestationMode: c.attestationMode,
+    attestationEveryHours: c.attestationEveryHours,
+    attestationOffsetHours: c.attestationOffsetHours,
+    attestationSigner: c.attestationSigner,
+    notes: c.notes,
+    archived: c.archived,
+    ...overrides,
+  };
+}
 
 export function openCategoryForm(existing = null) {
   return new Promise((resolve) => {
     let result = null;
     let color = existing?.color || CATEGORY_COLORS[state.categories.length % CATEGORY_COLORS.length];
+    let mode = existing?.attestationMode || '';
     const m = openModal({
       title: existing ? t('Edit institution') : t('New institution'),
       size: 'sm',
@@ -131,9 +162,20 @@ export function openCategoryForm(existing = null) {
             <div class="color-swatches">${CATEGORY_COLORS.map(
               (c) => `<button type="button" class="swatch ${c === color ? 'active' : ''}" data-color="${c}" style="background:${c}" aria-label="${c}"></button>`
             ).join('')}</div></div>
-          <div class="field"><label>${esc(t('Attestation every … teaching hours (optional)'))}</label>
-            <input class="input" name="every" type="number" min="0.5" step="0.5" value="${existing?.attestationEveryHours ?? ''}" placeholder="${esc(t('e.g. 30'))}">
-            <span class="hint">${esc(t('If this institution gives an attestation after a number of hours, the app flags the right session automatically and reminds you.'))}</span></div>
+          <div class="field"><label>${esc(t('Attestations'))}</label>
+            <select class="select" name="mode">${RULE_MODES.map((r) => `<option value="${r.value}" ${r.value === mode ? 'selected' : ''}>${esc(t(r.label))}</option>`).join('')}</select>
+            <span class="hint">${esc(t('The app flags the right sessions automatically and reminds you until you have the attestation.'))}</span></div>
+          <div class="grid-2" data-hours ${mode === 'hours' ? '' : 'hidden'}>
+            <div class="field"><label>${esc(t('Every … hours'))}</label>
+              <input class="input" name="every" type="number" min="0.5" step="0.5" value="${existing?.attestationEveryHours ?? ''}" placeholder="${esc(t('e.g. 30'))}"></div>
+            <div class="field"><label>${esc(t('Hours already done'))}</label>
+              <input class="input" name="offset" type="number" min="0" step="0.5" value="${existing?.attestationOffsetHours || ''}" placeholder="0"></div>
+          </div>
+          <div class="field" data-signer ${mode ? '' : 'hidden'}><label>${esc(t('Who gives or signs it?'))}</label>
+            <input class="input" name="signer" value="${esc(existing?.attestationSigner || '')}" placeholder="${esc(t('e.g. the director, the secretariat'))}" maxlength="200"></div>
+          <div class="field"><label>${esc(t('Notes'))}</label>
+            <input class="input" name="notes" value="${esc(existing?.notes || '')}" maxlength="500"></div>
+          ${existing?.attestationMode ? `<p class="small muted">${esc(t('Changing the rule applies from today; past sessions keep their status.'))}</p>` : ''}
           <div class="form-error" hidden></div>
         </form>`,
       footer: `<span class="spacer"></span><button class="btn" data-close>${esc(t('Cancel'))}</button>
@@ -145,13 +187,26 @@ export function openCategoryForm(existing = null) {
       color = b.dataset.color;
       form.querySelectorAll('.swatch').forEach((s) => s.classList.toggle('active', s === b));
     });
+    form.mode.addEventListener('change', () => {
+      mode = form.mode.value;
+      form.querySelector('[data-hours]').hidden = mode !== 'hours';
+      form.querySelector('[data-signer]').hidden = !mode;
+    });
     const save = async () => {
       const btn = m.root.querySelector('[data-save]');
       const errBox = form.querySelector('.form-error');
       errBox.hidden = true;
       setBusy(btn, true);
       try {
-        const body = { name: form.name.value, color, attestationEveryHours: form.every.value || null };
+        const body = {
+          name: form.name.value,
+          color,
+          attestationMode: mode || null,
+          attestationEveryHours: mode === 'hours' ? form.every.value || null : null,
+          attestationOffsetHours: mode === 'hours' ? form.offset.value || 0 : 0,
+          attestationSigner: form.signer.value,
+          notes: form.notes.value,
+        };
         result = existing ? await api.put(`/api/categories/${existing.id}`, { ...body, archived: existing.archived }) : await api.post('/api/categories', body);
         await loadCategories();
         changed();
@@ -316,7 +371,7 @@ export function openEventForm(opts = {}) {
 
     function attestationHtml() {
       const cat = categoryById(v.categoryId);
-      const auto = cat?.attestationEveryHours;
+      const auto = ruleDescription(cat);
       const showToggle = v.kind !== 'personal';
       return `
         <div class="att-toggle-card ${v.attRequired ? 'on' : ''}" ${showToggle ? '' : 'hidden'}>
@@ -342,10 +397,7 @@ export function openEventForm(opts = {}) {
           ${
             auto
               ? `<div class="hint" style="margin-top:10px;display:flex;gap:6px;align-items:flex-start">${icon('sparkles', 'sm')}<span>${esc(
-                  t('{name} gives an attestation every {n} teaching hours: the right session is flagged automatically.', {
-                    name: cat.name,
-                    n: auto,
-                  })
+                  `${auto} ${t('The right sessions are flagged automatically.')}`
                 )}</span></div>`
               : ''
           }
@@ -885,7 +937,8 @@ function renderDrawer(e) {
         ${esc(s === 'overdue' ? (overdueDays >= 1 ? tn(overdueDays, 'Attestation missing for {n} day', 'Attestation missing for {n} days') : t('Attestation missing')) : t('Attestation to ask for at this session'))}
         ${e.attestation.source === 'auto' ? `<span class="chip primary">${icon('sparkles')}${esc(t('automatic'))}</span>` : ''}</div>
       ${e.attestation.note ? `<div class="desc">“${esc(e.attestation.note)}”</div>` : ''}
-      ${e.attestation.source === 'auto' && cat ? `<div class="desc">${esc(t('{name}: one attestation every {n} teaching hours.', { name: cat.name, n: cat.attestationEveryHours }))}</div>` : ''}
+      ${e.attestation.source === 'auto' && ruleDescription(cat) ? `<div class="desc">${esc(ruleDescription(cat))}</div>` : ''}
+      ${cat?.attestationSigner ? `<div class="desc">${esc(t('Given by: {who}', { who: cat.attestationSigner }))}</div>` : ''}
       ${e.attestation.snoozedUntil && e.attestation.snoozedUntil > now ? `<div class="desc">${icon('snooze', 'sm')} ${esc(t('Snoozed until {d}', { d: `${fmtShort(e.attestation.snoozedUntil)} ${fmtTime(e.attestation.snoozedUntil)}` }))}</div>` : ''}
       <div class="actions">
         <button class="btn success sm" data-att="received">${icon('check', 'sm')}${esc(t('Mark as received'))}</button>
@@ -911,7 +964,7 @@ function renderDrawer(e) {
       <div style="flex:1;min-width:0">
         <div class="flex wrap gap-sm" style="margin-bottom:6px">
           <span class="chip">${esc(kindLabel(e.kind))}</span>
-          ${e.status === 'cancelled' ? `<span class="chip danger">${icon('ban')}${esc(t('Cancelled'))}</span>` : ''}
+          ${e.status === 'cancelled' ? `<span class="chip danger">${icon('ban')}${esc(e.cancelReason?.startsWith('holiday:') ? t('Cancelled — holiday') : t('Cancelled'))}</span>` : ''}
           ${isPast && e.status !== 'cancelled' ? `<span class="chip muted">${esc(t('Past'))}</span>` : ''}
         </div>
         <h2 style="${e.status === 'cancelled' ? 'text-decoration:line-through' : ''}">${esc(e.title)}</h2>
@@ -934,7 +987,7 @@ function renderDrawer(e) {
           ? `<div class="stack tight"><span class="label">${esc(t('Documents'))}</span>${e.documents
               .map(
                 (d) => `<a class="doc-mini" href="/api/documents/${d.id}/file" target="_blank" rel="noopener">
-              ${d.thumb_name || d.mime.startsWith('image/') ? `<img src="/api/documents/${d.id}/thumb" alt="">` : `<span class="ic">${icon('fileText')}</span>`}
+              ${d.has_thumb || d.mime.startsWith('image/') ? `<img src="/api/documents/${d.id}/thumb" alt="">` : `<span class="ic">${icon('fileText')}</span>`}
               <span style="flex:1;min-width:0" class="ellipsis strong">${esc(d.title)}</span>${icon('external', 'sm')}</a>`
               )
               .join('')}</div>`

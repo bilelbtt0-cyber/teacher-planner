@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { t, tn, fmtMonthShort, timeRange, relativeDay, daysAgo, hoursLabel, fmtDate, minutesBetween, nowWall, fmtShort, fmtTime } from '../i18n.js';
 import { state, subscribe, categoryById, eventColor, changed } from '../store.js';
 import { esc, icon, on, emptyState, toast, errorToast, confirmDialog } from '../ui.js';
-import { openEventDetails, markReceivedFlow, attestationAction, openCategoryForm } from '../eventForm.js';
+import { openEventDetails, markReceivedFlow, attestationAction, openCategoryForm, ruleDescription } from '../eventForm.js';
 
 const TABS = [
   { key: 'overdue', label: 'To collect', icon: 'alertCircle' },
@@ -67,24 +67,33 @@ export async function render(root, params) {
   }
 
   function progressPanel() {
-    const rules = data.progress.filter((p) => p.everyHours);
-    const without = data.progress.filter((p) => !p.everyHours);
-    return `<div class="card"><div class="card-header"><h3>${esc(t('Hours rules'))}</h3></div>
+    const rules = data.progress.filter((p) => p.mode);
+    const without = data.progress.filter((p) => !p.mode);
+    const nextLine = (p) =>
+      p.nextAttestation
+        ? esc(t('Next: {d}', { d: `${fmtShort(p.nextAttestation.start)} ${fmtTime(p.nextAttestation.start)}` }))
+        : esc(t('Plan more sessions to see the next one.'));
+    return `<div class="card"><div class="card-header"><h3>${esc(t('Attestation rules'))}</h3></div>
       <div class="card-body">
-        <p class="small muted" style="margin-bottom:14px">${esc(t('For institutions that give an attestation every N teaching hours, the app counts the hours and flags the session where it is due.'))}</p>
+        <p class="small muted" style="margin-bottom:14px">${esc(t('Each institution can give attestations every N hours, after each session or once a month. The app flags the right sessions for you.'))}</p>
         ${rules
           .map((p) => {
-            const pct = Math.min(100, Math.round((p.hoursSinceLast / p.everyHours) * 100));
-            return `<div class="progress-item"><div class="top"><span class="cat-dot" style="background:${p.color}"></span>
+            const cat = categoryById(p.id);
+            const head = `<div class="top"><span class="cat-dot" style="background:${p.color}"></span>
               <span class="name ellipsis">${esc(p.name)}</span>
-              <button class="btn ghost sm icon-only" data-edit-cat="${p.id}" title="${esc(t('Edit'))}">${icon('edit', 'sm')}</button></div>
-              <div class="progress"><div style="width:${pct}%;background:${p.color}"></div></div>
-              <div class="sub">${esc(t('{a} of {b} since the last attestation', { a: hoursLabel(p.hoursSinceLast), b: hoursLabel(p.everyHours) }))}<br>
-              ${p.nextAttestation ? esc(t('Next: {d}', { d: `${fmtShort(p.nextAttestation.start)} ${fmtTime(p.nextAttestation.start)}` })) : esc(t('Plan more sessions to see the next one.'))}
-              · ${esc(t('total {h}', { h: hoursLabel(p.totalHours) }))}</div></div>`;
+              <button class="btn ghost sm icon-only" data-edit-cat="${p.id}" title="${esc(t('Edit'))}">${icon('edit', 'sm')}</button></div>`;
+            if (p.mode === 'hours') {
+              const pct = Math.min(100, Math.round((p.hoursSinceLast / p.everyHours) * 100));
+              return `<div class="progress-item">${head}
+                <div class="progress"><div style="width:${pct}%;background:${p.color}"></div></div>
+                <div class="sub">${esc(t('{a} of {b} since the last attestation', { a: hoursLabel(p.hoursSinceLast), b: hoursLabel(p.everyHours) }))}<br>
+                ${nextLine(p)} · ${esc(t('total {h}', { h: hoursLabel(p.totalHours) }))}</div></div>`;
+            }
+            return `<div class="progress-item">${head}
+              <div class="sub" style="margin-top:0">${esc(ruleDescription(cat))}<br>${nextLine(p)}</div></div>`;
           })
           .join('')}
-        ${!rules.length ? `<p class="small" style="margin-bottom:10px">${esc(t('No hours rule yet.'))}</p>` : ''}
+        ${!rules.length ? `<p class="small" style="margin-bottom:10px">${esc(t('No rule yet.'))}</p>` : ''}
         ${
           without.length
             ? `<div class="stack tight" style="margin-top:16px"><span class="label">${esc(t('Add a rule to'))}</span><div class="pills">${without

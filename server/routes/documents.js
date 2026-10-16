@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import multer from 'multer';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, transaction, getSettings, UPLOAD_DIR } from '../db.js';
@@ -15,14 +14,12 @@ const ALLOWED = {
   'image/png': '.png',
   'image/webp': '.webp',
 };
+export const MAX_FILE_MB = 15;
 
+// Files are kept in memory just long enough to be written into the database.
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (req, file, cb) =>
-      cb(null, (file.fieldname === 'thumb' ? 'thumb-' : '') + crypto.randomBytes(16).toString('hex') + (ALLOWED[file.mimetype] || '')),
-  }),
-  limits: { fileSize: 25 * 1024 * 1024, files: 2 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 2 },
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'thumb' && file.mimetype !== 'image/jpeg') return cb(httpError(400, 'Invalid thumbnail.'));
     if (ALLOWED[file.mimetype]) cb(null, true);
@@ -35,31 +32,26 @@ function uploadFiles(req, res, next) {
     { name: 'file', maxCount: 1 },
     { name: 'thumb', maxCount: 1 },
   ])(req, res, (err) => {
-    if (err?.code === 'LIMIT_FILE_SIZE') return next(httpError(400, 'This file is larger than 25 MB.'));
+    if (err?.code === 'LIMIT_FILE_SIZE') return next(httpError(400, `This file is larger than ${MAX_FILE_MB} MB.`));
     next(err);
   });
 }
 
-function removeFile(name) {
-  if (!name) return;
+function removeLegacyFile(name) {
+  if (!name || name.startsWith('db:')) return;
   fs.rm(path.join(UPLOAD_DIR, path.basename(name)), { force: true }, () => {});
 }
 
-function discardUploads(req) {
-  for (const list of Object.values(req.files || {})) for (const f of list) removeFile(f.filename);
+async function linkedEvents(docId) {
+  const rows = await db.all(
+    `SELECT e.id, e.title, e.start, e.end, e.attestation_status FROM document_events de
+     JOIN events e ON e.id = de.event_id WHERE de.document_id = ? ORDER BY e.start`,
+    docId
+  );
+  return rows.map((e) => ({ id: e.id, title: e.title, start: e.start, end: e.end, attestationStatus: e.attestation_status }));
 }
 
-function linkedEvents(docId) {
-  return db
-    .prepare(
-      `SELECT e.id, e.title, e.start, e.end, e.attestation_status, e.category_id FROM document_events de
-       JOIN events e ON e.id = de.event_id WHERE de.document_id = ? ORDER BY e.start`
-    )
-    .all(docId)
-    .map((e) => ({ id: e.id, title: e.title, start: e.start, end: e.end, attestationStatus: e.attestation_status }));
-}
-
-export function serializeDoc(d) {
+export async function serializeDoc(d) {
   return {
     id: d.id,
     title: d.title,
@@ -74,8 +66,8 @@ export function serializeDoc(d) {
     categoryId: d.category_id,
     categoryName: d.category_name ?? null,
     categoryColor: d.category_color ?? null,
-    hasThumb: !!d.thumb_name || d.mime.startsWith('image/'),
-    events: linkedEvents(d.id),
+    hasThumb: !!d.has_thumb || d.mime.startsWith('image/'),
+    events: await linkedEvents(d.id),
     notes: d.notes,
     tags: d.tags ? d.tags.split(',').filter(Boolean) : [],
     pages: d.pages,
@@ -84,12 +76,16 @@ export function serializeDoc(d) {
   };
 }
 
-const SELECT = `
-  SELECT d.*, c.name AS category_name, c.color AS category_color
+// Never select the file contents when listing: only when a file is actually opened.
+export const DOC_SELECT = `
+  SELECT d.id, d.title, d.file_name, d.original_name, d.mime, d.size, d.doc_type, d.doc_date, d.period_from, d.period_to,
+    d.hours, d.category_id, d.notes, d.tags, d.pages, d.created_at, d.updated_at,
+    (d.thumb_name IS NOT NULL OR d.thumb_data IS NOT NULL) AS has_thumb,
+    c.name AS category_name, c.color AS category_color
   FROM documents d
   LEFT JOIN categories c ON c.id = d.category_id`;
 
-function parseIds(v) {
+async function parseIds(v) {
   if (v === undefined) return undefined;
   let list = v;
   if (typeof v === 'string') {
@@ -102,12 +98,12 @@ function parseIds(v) {
   if (!Array.isArray(list)) list = [list];
   const ids = [...new Set(list.map((x) => parseInt(x, 10)).filter((x) => x > 0))];
   for (const id of ids) {
-    if (!db.prepare('SELECT id FROM events WHERE id = ?').get(id)) throw httpError(400, 'One of the linked appointments no longer exists.');
+    if (!(await db.get('SELECT id FROM events WHERE id = ?', id))) throw httpError(400, 'One of the linked appointments no longer exists.');
   }
   return ids;
 }
 
-function cleanMeta(body, partial) {
+async function cleanMeta(body, partial) {
   const f = {};
   if (!partial || body.title !== undefined) {
     const title = String(body.title ?? '').trim();
@@ -125,8 +121,7 @@ function cleanMeta(body, partial) {
   date('docDate', 'doc_date');
   date('periodFrom', 'period_from');
   date('periodTo', 'period_to');
-  if (f.period_from && f.period_to && f.period_to < f.period_from)
-    throw httpError(400, 'The end of the period must be after its start.');
+  if (f.period_from && f.period_to && f.period_to < f.period_from) throw httpError(400, 'The end of the period must be after its start.');
   if (!partial || body.hours !== undefined) {
     const h = body.hours === '' || body.hours === null || body.hours === undefined ? null : Number(body.hours);
     if (h !== null && (!Number.isFinite(h) || h < 0 || h > 100000)) throw httpError(400, 'Hours must be a positive number.');
@@ -134,7 +129,7 @@ function cleanMeta(body, partial) {
   }
   if (!partial || body.categoryId !== undefined) {
     const id = body.categoryId ? parseInt(body.categoryId, 10) : null;
-    if (id && !db.prepare('SELECT id FROM categories WHERE id = ?').get(id)) throw httpError(400, 'That institution no longer exists.');
+    if (id && !(await db.get('SELECT id FROM categories WHERE id = ?', id))) throw httpError(400, 'That institution no longer exists.');
     f.category_id = id || null;
   }
   if (!partial || body.notes !== undefined) f.notes = String(body.notes ?? '').slice(0, 5000);
@@ -146,31 +141,34 @@ function cleanMeta(body, partial) {
   return f;
 }
 
-function setLinks(docId, eventIds, markReceived) {
+async function setLinks(docId, eventIds, markReceived) {
   if (eventIds === undefined) return;
-  db.prepare('DELETE FROM document_events WHERE document_id = ?').run(docId);
-  const ins = db.prepare('INSERT OR IGNORE INTO document_events (document_id, event_id) VALUES (?, ?)');
-  for (const id of eventIds) ins.run(docId, id);
-  if (markReceived) for (const id of eventIds) markEventReceived(id);
+  await db.run('DELETE FROM document_events WHERE document_id = ?', docId);
+  for (const id of eventIds) await db.run('INSERT OR IGNORE INTO document_events (document_id, event_id) VALUES (?, ?)', docId, id);
+  if (markReceived) for (const id of eventIds) await markEventReceived(id);
 }
 
-export function markEventReceived(eventId) {
-  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+export async function markEventReceived(eventId) {
+  const ev = await db.get('SELECT * FROM events WHERE id = ?', eventId);
   if (!ev || ev.attestation_status === 'received') return;
-  const now = nowIn(getSettings().timezone);
-  db.prepare(
+  const now = nowIn((await getSettings()).timezone);
+  await db.run(
     `UPDATE events SET attestation_required = 1,
        attestation_source = COALESCE(attestation_source, 'manual'),
        attestation_status = 'received', attestation_received_at = ?, attestation_snoozed_until = NULL,
-       updated_at = datetime('now') WHERE id = ?`
-  ).run(now, eventId);
-  db.prepare(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`).run(eventId);
-  recomputeCategory(ev.category_id);
+       updated_at = datetime('now') WHERE id = ?`,
+    now,
+    eventId
+  );
+  await db.run(`UPDATE notifications SET read_at = datetime('now') WHERE event_id = ? AND type = 'attestation' AND read_at IS NULL`, eventId);
+  await recomputeCategory(ev.category_id);
 }
+
+const fileName = (file) => `db:${ALLOWED[file.mimetype] || ''}`;
 
 export const documentsRouter = Router();
 
-documentsRouter.get('/', (req, res) => {
+documentsRouter.get('/', async (req, res) => {
   const where = [];
   const args = [];
   const { q, type, categoryId, from, to, eventId, sort } = req.query;
@@ -206,18 +204,29 @@ documentsRouter.get('/', (req, res) => {
       : sort === 'added'
         ? 'd.created_at DESC, d.id DESC'
         : 'COALESCE(d.doc_date, substr(d.created_at, 1, 10)) DESC, d.id DESC';
-  const rows = db.prepare(`${SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order}`).all(...args);
-  res.json(rows.map(serializeDoc));
+  const rows = await db.all(`${DOC_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order}`, ...args);
+  res.json(await Promise.all(rows.map(serializeDoc)));
 });
 
-documentsRouter.get('/:id', (req, res) => {
-  const row = db.prepare(`${SELECT} WHERE d.id = ?`).get(parseInt(req.params.id, 10));
+async function loadDoc(id) {
+  const row = await db.get(`${DOC_SELECT} WHERE d.id = ?`, id);
   if (!row) throw httpError(404, 'This document no longer exists.');
-  res.json(serializeDoc(row));
+  return row;
+}
+
+documentsRouter.get('/:id', async (req, res) => {
+  res.json(await serializeDoc(await loadDoc(parseInt(req.params.id, 10))));
 });
 
-function sendStored(res, fileName, mime, disposition, niceName) {
-  const file = path.join(UPLOAD_DIR, path.basename(fileName));
+function sendBytes(res, data, mime, disposition, niceName) {
+  res.setHeader('Content-Type', mime);
+  if (niceName) res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(niceName)}`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.end(Buffer.from(data));
+}
+
+function sendLegacy(res, name, mime, disposition, niceName) {
+  const file = path.join(UPLOAD_DIR, path.basename(name));
   if (!fs.existsSync(file)) throw httpError(404, 'The file is missing from the storage folder.');
   res.setHeader('Content-Type', mime);
   if (niceName) res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(niceName)}`);
@@ -225,119 +234,106 @@ function sendStored(res, fileName, mime, disposition, niceName) {
   res.sendFile(file);
 }
 
-documentsRouter.get('/:id/file', (req, res) => {
-  const row = db.prepare('SELECT * FROM documents WHERE id = ?').get(parseInt(req.params.id, 10));
+documentsRouter.get('/:id/file', async (req, res) => {
+  const row = await db.get('SELECT title, file_name, mime, file_data FROM documents WHERE id = ?', parseInt(req.params.id, 10));
   if (!row) throw httpError(404, 'This document no longer exists.');
-  const safe = row.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim() || 'document';
-  sendStored(res, row.file_name, row.mime, req.query.download ? 'attachment' : 'inline', safe + path.extname(row.file_name));
+  const ext = ALLOWED[row.mime] || path.extname(row.file_name);
+  const safe = (row.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim() || 'document') + ext;
+  const disposition = req.query.download ? 'attachment' : 'inline';
+  if (row.file_data) return sendBytes(res, row.file_data, row.mime, disposition, safe);
+  sendLegacy(res, row.file_name, row.mime, disposition, safe);
 });
 
-documentsRouter.get('/:id/thumb', (req, res) => {
-  const row = db.prepare('SELECT * FROM documents WHERE id = ?').get(parseInt(req.params.id, 10));
+documentsRouter.get('/:id/thumb', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const row = await db.get('SELECT mime, file_name, thumb_name, thumb_data FROM documents WHERE id = ?', id);
   if (!row) throw httpError(404, 'This document no longer exists.');
-  if (row.thumb_name) return sendStored(res, row.thumb_name, 'image/jpeg', 'inline');
-  if (row.mime.startsWith('image/')) return sendStored(res, row.file_name, row.mime, 'inline');
+  if (row.thumb_data) return sendBytes(res, row.thumb_data, 'image/jpeg', 'inline');
+  if (row.thumb_name) return sendLegacy(res, row.thumb_name, 'image/jpeg', 'inline');
+  if (row.mime.startsWith('image/')) {
+    const full = await db.get('SELECT file_data FROM documents WHERE id = ?', id);
+    if (full.file_data) return sendBytes(res, full.file_data, row.mime, 'inline');
+    return sendLegacy(res, row.file_name, row.mime, 'inline');
+  }
   throw httpError(404, 'No preview.');
 });
 
-documentsRouter.post('/', uploadFiles, (req, res) => {
+documentsRouter.post('/', uploadFiles, async (req, res) => {
   const file = req.files?.file?.[0];
   const thumb = req.files?.thumb?.[0];
-  if (!file) {
-    discardUploads(req);
-    throw httpError(400, 'Please add a file or a scan.');
-  }
-  let meta, eventIds;
-  try {
-    meta = cleanMeta(req.body, false);
-    eventIds = parseIds(req.body.eventIds) || [];
-  } catch (err) {
-    discardUploads(req);
-    throw err;
-  }
-  const id = transaction(() => {
-    const newId = Number(
-      db
-        .prepare(
-          `INSERT INTO documents (title, file_name, original_name, mime, size, doc_type, doc_date, period_from, period_to,
-            hours, category_id, thumb_name, notes, tags, pages)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          meta.title,
-          file.filename,
-          file.originalname || '',
-          file.mimetype,
-          file.size,
-          meta.doc_type,
-          meta.doc_date,
-          meta.period_from,
-          meta.period_to,
-          meta.hours,
-          meta.category_id,
-          thumb ? thumb.filename : null,
-          meta.notes,
-          meta.tags,
-          meta.pages || 1
-        ).lastInsertRowid
+  if (!file) throw httpError(400, 'Please add a file or a scan.');
+  const meta = await cleanMeta(req.body, false);
+  const eventIds = (await parseIds(req.body.eventIds)) || [];
+  const id = await transaction(async () => {
+    const { lastInsertRowid: newId } = await db.run(
+      `INSERT INTO documents (title, file_name, original_name, mime, size, doc_type, doc_date, period_from, period_to,
+        hours, category_id, notes, tags, pages, file_data, thumb_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      meta.title,
+      fileName(file),
+      file.originalname || '',
+      file.mimetype,
+      file.size,
+      meta.doc_type,
+      meta.doc_date,
+      meta.period_from,
+      meta.period_to,
+      meta.hours,
+      meta.category_id,
+      meta.notes,
+      meta.tags,
+      meta.pages || 1,
+      file.buffer,
+      thumb ? thumb.buffer : null
     );
-    setLinks(newId, eventIds, req.body.markReceived === 'true');
+    await setLinks(newId, eventIds, req.body.markReceived === 'true');
     return newId;
   });
-  res.status(201).json(serializeDoc(db.prepare(`${SELECT} WHERE d.id = ?`).get(id)));
+  res.status(201).json(await serializeDoc(await loadDoc(id)));
 });
 
-documentsRouter.put('/:id', uploadFiles, (req, res) => {
+documentsRouter.put('/:id', uploadFiles, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const existing = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  const existing = await db.get('SELECT id, file_name, thumb_name FROM documents WHERE id = ?', id);
+  if (!existing) throw httpError(404, 'This document no longer exists.');
   const file = req.files?.file?.[0];
   const thumb = req.files?.thumb?.[0];
-  if (!existing) {
-    discardUploads(req);
-    throw httpError(404, 'This document no longer exists.');
-  }
-  let meta, eventIds;
-  try {
-    meta = cleanMeta(req.body, true);
-    eventIds = parseIds(req.body.eventIds);
-  } catch (err) {
-    discardUploads(req);
-    throw err;
-  }
+  const meta = await cleanMeta(req.body, true);
+  const eventIds = await parseIds(req.body.eventIds);
   if (file) {
     Object.assign(meta, {
-      file_name: file.filename,
+      file_name: fileName(file),
       original_name: file.originalname || '',
       mime: file.mimetype,
       size: file.size,
-      thumb_name: thumb ? thumb.filename : null,
+      file_data: file.buffer,
+      thumb_data: thumb ? thumb.buffer : null,
+      thumb_name: null,
     });
   }
   const keys = Object.keys(meta);
-  transaction(() => {
+  await transaction(async () => {
     if (keys.length) {
-      db.prepare(`UPDATE documents SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
-        ...keys.map((k) => meta[k]),
-        id
-      );
+      await db.run(`UPDATE documents SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`, ...keys.map((k) => meta[k]), id);
     }
-    setLinks(id, eventIds, req.body.markReceived === 'true');
+    await setLinks(id, eventIds, req.body.markReceived === 'true');
   });
   if (file) {
-    removeFile(existing.file_name);
-    removeFile(existing.thumb_name);
-  } else if (thumb) {
-    removeFile(thumb.filename);
+    removeLegacyFile(existing.file_name);
+    removeLegacyFile(existing.thumb_name);
   }
-  res.json(serializeDoc(db.prepare(`${SELECT} WHERE d.id = ?`).get(id)));
+  res.json(await serializeDoc(await loadDoc(id)));
 });
 
-documentsRouter.delete('/:id', (req, res) => {
+documentsRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  const row = await db.get('SELECT file_name, thumb_name FROM documents WHERE id = ?', id);
   if (!row) return res.json({ ok: true });
-  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
-  removeFile(row.file_name);
-  removeFile(row.thumb_name);
+  await transaction(async () => {
+    await db.run('DELETE FROM document_events WHERE document_id = ?', id);
+    await db.run('DELETE FROM documents WHERE id = ?', id);
+  });
+  removeLegacyFile(row.file_name);
+  removeLegacyFile(row.thumb_name);
   res.json({ ok: true });
 });

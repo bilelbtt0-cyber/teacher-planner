@@ -143,7 +143,15 @@ export async function render(root) {
             <button class="btn ghost sm icon-only close" data-hide-tip aria-label="${esc(t('Close'))}">${icon('x', 'sm')}</button></div>`
         : '';
 
+    const ob = state.settings.onboarding || {};
+    const onboard = ob.completed
+      ? ''
+      : `<div class="onboard-card"><span class="ic">${icon('sparkles')}</span>
+          <div class="txt"><strong>${esc(ob.step > 1 ? t('Finish personalising your planner') : t('Make this planner yours'))}</strong>
+          <span>${esc(ob.step > 1 ? t('You stopped at step {a} of {b}. Your answers are saved.', { a: ob.step, b: 6 }) : t('Add your institutions, timetable and reminders in about 5 minutes.'))}</span></div>
+          <a class="btn primary" href="#/welcome">${esc(ob.step > 1 ? t('Continue') : t('Start'))}${icon('arrowR', 'sm')}</a></div>`;
     root.innerHTML = `
+      ${onboard}
       <div class="hero">
         <div style="flex:1;min-width:0"><h2>${esc(greeting())}</h2><p class="cap">${esc(fmtDayYear(now))}</p></div>
         <a class="btn" href="#/calendar">${icon('calendar')}${esc(t('Open calendar'))}</a>

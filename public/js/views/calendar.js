@@ -104,9 +104,26 @@ export async function render(root, params) {
 
     events: async (info, success, failure) => {
       try {
-        const list = await api.get(`/api/events${qs({ start: dateToWall(info.start), end: dateToWall(info.end) })}`);
+        const [list, holidays] = await Promise.all([
+          api.get(`/api/events${qs({ start: dateToWall(info.start), end: dateToWall(info.end) })}`),
+          api.get('/api/holidays').catch(() => []),
+        ]);
+        const holidayEvents = holidays.map((h) => {
+          const end = new Date(`${h.end}T12:00`);
+          end.setDate(end.getDate() + 1);
+          return {
+            id: `holiday-${h.id}`,
+            title: h.name,
+            start: h.start,
+            end: dateToWall(end).slice(0, 10),
+            allDay: true,
+            display: 'background',
+            classNames: ['holiday-bg'],
+            extendedProps: { holiday: h },
+          };
+        });
         success(
-          list
+          holidayEvents.concat(list
             .filter((e) => !hidden.has(e.categoryId || 0) && (showCancelled || e.status !== 'cancelled'))
             .map((e) => ({
               id: String(e.id),
@@ -118,7 +135,7 @@ export async function render(root, params) {
               backgroundColor: eventColor(e),
               borderColor: eventColor(e),
               extendedProps: { ev: e },
-            }))
+            })))
         );
       } catch (err) {
         failure(err);
@@ -127,6 +144,7 @@ export async function render(root, params) {
     },
 
     eventContent: (arg) => {
+      if (arg.event.extendedProps.holiday) return { html: arg.event.display === 'background' ? `<div class="fc-event-title">${esc(arg.event.title)}</div>` : esc(arg.event.title) };
       const e = arg.event.extendedProps.ev;
       const st = attestationState(e);
       const flag =
@@ -153,6 +171,7 @@ export async function render(root, params) {
       };
     },
     eventDidMount: (arg) => {
+      if (arg.event.extendedProps.holiday) return;
       const e = arg.event.extendedProps.ev;
       arg.el.style.setProperty('--ev-color', eventColor(e));
       arg.el.title = `${e.title}${e.location ? ` — ${e.location}` : ''}`;
@@ -160,6 +179,7 @@ export async function render(root, params) {
 
     eventClick: (info) => {
       info.jsEvent.preventDefault();
+      if (info.event.extendedProps.holiday) return;
       openEventDetails(Number(info.event.id));
     },
 

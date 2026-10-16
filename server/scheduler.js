@@ -65,35 +65,27 @@ function fmt(settings) {
   };
 }
 
-function wasSent(key) {
-  return !!db.prepare('SELECT 1 FROM sent_log WHERE key = ?').get(key);
+async function wasSent(key) {
+  return !!(await db.get('SELECT 1 AS ok FROM sent_log WHERE key = ?', key));
 }
 function markSent(key) {
-  db.prepare('INSERT OR IGNORE INTO sent_log (key) VALUES (?)').run(key);
+  return db.run('INSERT OR IGNORE INTO sent_log (key) VALUES (?)', key);
 }
 
-export function notify({ type, title, body = '', eventId = null, now, replaceUnread = false }) {
+export async function notify({ type, title, body = '', eventId = null, now, replaceUnread = false }) {
   if (replaceUnread && eventId) {
-    const existing = db
-      .prepare('SELECT id FROM notifications WHERE event_id = ? AND type = ? AND read_at IS NULL')
-      .get(eventId, type);
+    const existing = await db.get('SELECT id FROM notifications WHERE event_id = ? AND type = ? AND read_at IS NULL', eventId, type);
     if (existing) {
-      db.prepare('UPDATE notifications SET title = ?, body = ?, created_at = ? WHERE id = ?').run(title, body, now, existing.id);
+      await db.run('UPDATE notifications SET title = ?, body = ?, created_at = ? WHERE id = ?', title, body, now, existing.id);
       return;
     }
   }
-  db.prepare('INSERT INTO notifications (type, title, body, event_id, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    type,
-    title,
-    body,
-    eventId,
-    now
-  );
+  await db.run('INSERT INTO notifications (type, title, body, event_id, created_at) VALUES (?, ?, ?, ?, ?)', type, title, body, eventId, now);
 }
 
-function categoryMap() {
+async function categoryMap() {
   const map = new Map();
-  for (const c of db.prepare('SELECT id, name, color FROM categories').all()) map.set(c.id, c);
+  for (const c of await db.all('SELECT id, name, color FROM categories')) map.set(c.id, c);
   return map;
 }
 
@@ -105,9 +97,7 @@ function eventMeta(e, f, s, cats) {
 
 async function runReminders(settings, now, s, f, cats) {
   const horizon = addMinutes(now, 40320);
-  const rows = db
-    .prepare(`SELECT * FROM events WHERE status = 'scheduled' AND start > ? AND start <= ? AND reminders != '[]'`)
-    .all(addMinutes(now, -5), horizon);
+  const rows = await db.all(`SELECT * FROM events WHERE status = 'scheduled' AND start > ? AND start <= ? AND reminders != '[]'`, addMinutes(now, -5), horizon);
   const emailItems = [];
   for (const e of rows) {
     let reminders = [];
@@ -117,17 +107,20 @@ async function runReminders(settings, now, s, f, cats) {
       continue;
     }
     // If several reminders are due at once (e.g. the computer was off), only the closest one is delivered.
-    const due = reminders
-      .filter((r) => addMinutes(e.start, -r.minutes) <= now && !wasSent(`rem:${e.id}:${r.minutes}:${e.start}`))
-      .sort((a, b) => a.minutes - b.minutes);
+    // Time check first (no database), then only the reminders that are due are looked up.
+    const due = [];
+    for (const r of reminders) {
+      if (addMinutes(e.start, -r.minutes) <= now && !(await wasSent(`rem:${e.id}:${r.minutes}:${e.start}`))) due.push(r);
+    }
+    due.sort((a, b) => a.minutes - b.minutes);
     if (!due.length) continue;
-    for (const r of due) markSent(`rem:${e.id}:${r.minutes}:${e.start}`);
+    for (const r of due) await markSent(`rem:${e.id}:${r.minutes}:${e.start}`);
     const r = due[0];
     const minutesLeft = Math.max(0, Math.round((toDate(e.start) - toDate(now)) / 60000));
     const body = `${e.all_day ? s.allDay : `${f.time(e.start)}–${f.time(e.end)}`} · ${s.in(minutesLeft)}${
       e.attestation_required && e.attestation_status === 'pending' ? ` · ${s.attNeeded}` : ''
     }`;
-    notify({ type: 'reminder', title: s.notifReminder(e.title), body, eventId: e.id, now });
+    await notify({ type: 'reminder', title: s.notifReminder(e.title), body, eventId: e.id, now });
     if (due.some((x) => x.email)) emailItems.push(e);
   }
   if (emailItems.length && settings.emailEnabled) {
@@ -145,7 +138,7 @@ async function runReminders(settings, now, s, f, cats) {
       .join('');
     await sendMail({
       subject: emailItems.length === 1 ? s.reminderSubject(emailItems[0].title) : s.remindersSubject(emailItems.length),
-      html: layout({ heading: s.reminderHeading, body: list, cta: s.cta, ctaUrl: `${APP_URL}/#/calendar` }),
+      html: await layout({ heading: s.reminderHeading, body: list, cta: s.cta, ctaUrl: `${APP_URL}/#/calendar` }),
       text: emailItems.map((e) => `${e.title} — ${e.start.replace('T', ' ')}`).join('\n'),
     });
   }
@@ -153,27 +146,19 @@ async function runReminders(settings, now, s, f, cats) {
 
 async function runAttestations(settings, now, s, f, cats) {
   // Heads-up when a session that needs an attestation begins.
-  const starting = db
-    .prepare(
-      `SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
-       AND start <= ? AND end > ?`
-    )
-    .all(now, now);
+  const starting = await db.all(`SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
+       AND start <= ? AND end > ?`, now, now);
   for (const e of starting) {
     const key = `att-start:${e.id}:${e.start}`;
-    if (wasSent(key)) continue;
-    markSent(key);
-    notify({ type: 'attestation', title: s.notifAttStart(e.title), body: s.notifAttStartBody, eventId: e.id, now, replaceUnread: true });
+    if (await wasSent(key)) continue;
+    await markSent(key);
+    await notify({ type: 'attestation', title: s.notifAttStart(e.title), body: s.notifAttStartBody, eventId: e.id, now, replaceUnread: true });
   }
 
   // Persistent nagging after the session ended, until received or waived.
   if (inWindow(timePart(now), settings.quietStart, settings.quietEnd)) return;
-  const pending = db
-    .prepare(
-      `SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
-       AND end <= ? ORDER BY end`
-    )
-    .all(now);
+  const pending = await db.all(`SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
+       AND end <= ? ORDER BY end`, now);
   const interval = Math.max(1, Number(settings.nagIntervalHours) || 24) * 60;
   const due = pending.filter(
     (e) =>
@@ -182,8 +167,8 @@ async function runAttestations(settings, now, s, f, cats) {
   );
   if (!due.length) return;
   for (const e of due) {
-    db.prepare('UPDATE events SET attestation_last_nag_at = ? WHERE id = ?').run(now, e.id);
-    notify({ type: 'attestation', title: s.notifNag(e.title), body: s.notifNagBody, eventId: e.id, now, replaceUnread: true });
+    await db.run('UPDATE events SET attestation_last_nag_at = ? WHERE id = ?', now, e.id);
+    await notify({ type: 'attestation', title: s.notifNag(e.title), body: s.notifNagBody, eventId: e.id, now, replaceUnread: true });
   }
   if (!settings.emailEnabled) return;
   // One email listing everything still missing, so many sessions never mean many emails.
@@ -201,7 +186,7 @@ async function runAttestations(settings, now, s, f, cats) {
     .join('');
   await sendMail({
     subject: s.nagSubject(visible.length),
-    html: layout({
+    html: await layout({
       heading: s.nagHeading(visible.length),
       intro: s.nagIntro,
       body: list,
@@ -219,19 +204,13 @@ async function runDigest(settings, now, s, f, cats) {
   const key = `digest:${today}`;
   const sendAt = `${today}T${settings.digestTime || '07:00'}`;
   // Send within 3 hours after the chosen time (covers a computer that starts a bit late).
-  if (now < sendAt || now > addMinutes(sendAt, 180) || wasSent(key)) return;
-  markSent(key);
+  if (now < sendAt || now > addMinutes(sendAt, 180) || (await wasSent(key))) return;
+  await markSent(key);
   const dayStart = `${today}T00:00`;
   const dayEnd = addDays(dayStart, 1);
-  const events = db
-    .prepare(`SELECT * FROM events WHERE status = 'scheduled' AND start < ? AND end > ? ORDER BY all_day DESC, start`)
-    .all(dayEnd, dayStart);
-  const pending = db
-    .prepare(
-      `SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
-       AND end <= ? ORDER BY end`
-    )
-    .all(now);
+  const events = await db.all(`SELECT * FROM events WHERE status = 'scheduled' AND start < ? AND end > ? ORDER BY all_day DESC, start`, dayEnd, dayStart);
+  const pending = await db.all(`SELECT * FROM events WHERE status = 'scheduled' AND attestation_required = 1 AND attestation_status = 'pending'
+       AND end <= ? ORDER BY end`, now);
   if (!events.length && !pending.length) return;
   const list = events.length
     ? events
@@ -251,16 +230,16 @@ async function runDigest(settings, now, s, f, cats) {
     : '';
   await sendMail({
     subject: s.digestSubject(f.day(now)),
-    html: layout({ heading: s.digestHeading, intro: f.day(now), body: list + pend, cta: s.cta, ctaUrl: `${APP_URL}/#/today` }),
+    html: await layout({ heading: s.digestHeading, intro: f.day(now), body: list + pend, cta: s.cta, ctaUrl: `${APP_URL}/#/today` }),
     text: events.map((e) => `${e.all_day ? s.allDay : f.time(e.start)} ${e.title}`).join('\n'),
   });
 }
 
-function cleanup() {
-  db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).run(new Date().toISOString());
-  db.prepare(`DELETE FROM sent_log WHERE sent_at < datetime('now', '-120 days')`).run();
-  db.prepare(`DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < datetime('now', '-180 days')`).run();
-  db.prepare(`DELETE FROM email_log WHERE created_at < datetime('now', '-90 days')`).run();
+async function cleanup() {
+  await db.run(`DELETE FROM sessions WHERE expires_at < ?`, new Date().toISOString());
+  await db.run(`DELETE FROM sent_log WHERE sent_at < datetime('now', '-120 days')`);
+  await db.run(`DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < datetime('now', '-180 days')`);
+  await db.run(`DELETE FROM email_log WHERE created_at < datetime('now', '-90 days')`);
 }
 
 let running = false;
@@ -268,15 +247,17 @@ export async function tick() {
   if (running) return;
   running = true;
   try {
-    const settings = getSettings();
+    // Nothing to do before the account exists.
+    if (!(await db.get('SELECT id FROM users LIMIT 1'))) return;
+    const settings = await getSettings();
     const now = nowIn(settings.timezone);
     const s = STRINGS[settings.language] || STRINGS.en;
     const f = fmt(settings);
-    const cats = categoryMap();
+    const cats = await categoryMap();
     await runReminders(settings, now, s, f, cats);
     await runAttestations(settings, now, s, f, cats);
     await runDigest(settings, now, s, f, cats);
-    if (now.endsWith(':00')) cleanup();
+    if (now.endsWith(':00')) await cleanup();
   } catch (err) {
     console.error('[scheduler]', err);
   } finally {

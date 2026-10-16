@@ -4,13 +4,47 @@ import { getPrimaryUser } from './auth.js';
 
 export const APP_URL = (process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
 
-export function smtpConfigured(settings = getSettings()) {
+// Online, emails go through Brevo's web API (hosts like Render block email ports).
+// Set BREVO_API_KEY and EMAIL_FROM (a sender address verified in Brevo), e.g. "Agenda <agenda@gmail.com>".
+const BREVO_KEY = process.env.BREVO_API_KEY || '';
+const EMAIL_FROM = process.env.EMAIL_FROM || '';
+
+/** True when the hosting provides the email service, so she has nothing to configure. */
+export const emailManaged = () => !!(BREVO_KEY && EMAIL_FROM);
+
+export function emailConfigured(settings) {
+  if (emailManaged()) return true;
   const s = settings.smtp || {};
   return !!(s.host && s.port && (s.from || s.user));
 }
 
-export function recipient(settings = getSettings()) {
-  return settings.notifyEmail || getPrimaryUser()?.email || '';
+export async function recipient(settings) {
+  return settings.notifyEmail || (await getPrimaryUser())?.email || '';
+}
+
+function parseAddress(value) {
+  const m = String(value).match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  return m ? { name: m[1].replace(/^"|"$/g, '') || undefined, email: m[2] } : { email: String(value).trim() };
+}
+
+async function sendWithBrevo({ to, subject, html, text, appName }) {
+  const sender = parseAddress(EMAIL_FROM);
+  if (!sender.name) sender.name = appName;
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ sender, to: [{ email: to }], subject, htmlContent: html, textContent: text || subject }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (res.status !== 201 && res.status !== 202) {
+    let detail = '';
+    try {
+      detail = (await res.json()).message || '';
+    } catch {
+      /* no body */
+    }
+    throw Object.assign(new Error(detail || `HTTP ${res.status}`), { code: res.status === 401 ? 'EAUTH' : 'EAPI' });
+  }
 }
 
 function transport(settings) {
@@ -26,37 +60,32 @@ function transport(settings) {
 }
 
 function log(to, subject, status, error = null) {
-  db.prepare('INSERT INTO email_log (recipient, subject, status, error) VALUES (?, ?, ?, ?)').run(to || '-', subject, status, error);
+  return db.run('INSERT INTO email_log (recipient, subject, status, error) VALUES (?, ?, ?, ?)', to || '-', subject, status, error);
 }
 
 /** Sends an email. Never throws unless `throwOnError` is set; failures are logged in the email activity. */
 export async function sendMail({ subject, html, text }, { throwOnError = false, force = false } = {}) {
-  const settings = getSettings();
-  const to = recipient(settings);
+  const settings = await getSettings();
+  const to = await recipient(settings);
   if (!force && !settings.emailEnabled) return { skipped: 'disabled' };
-  if (!smtpConfigured(settings)) {
-    log(to, subject, 'skipped', 'Email server is not configured');
+  if (!emailConfigured(settings)) {
+    await log(to, subject, 'skipped', 'Email server is not configured');
     if (throwOnError) throw Object.assign(new Error('The email server is not configured yet.'), { status: 400 });
     return { skipped: 'not-configured' };
   }
   if (!to) {
-    log('-', subject, 'skipped', 'No recipient address');
+    await log('-', subject, 'skipped', 'No recipient address');
     if (throwOnError) throw Object.assign(new Error('No email address to send to.'), { status: 400 });
     return { skipped: 'no-recipient' };
   }
   try {
-    await transport(settings).sendMail({
-      from: settings.smtp.from || settings.smtp.user,
-      to,
-      subject,
-      html,
-      text,
-    });
-    log(to, subject, 'sent');
+    if (emailManaged()) await sendWithBrevo({ to, subject, html, text, appName: settings.appName || 'Planner' });
+    else await transport(settings).sendMail({ from: settings.smtp.from || settings.smtp.user, to, subject, html, text });
+    await log(to, subject, 'sent');
     return { sent: true };
   } catch (err) {
     const message = friendlyError(err);
-    log(to, subject, 'failed', message.slice(0, 500));
+    await log(to, subject, 'failed', message.slice(0, 500));
     if (throwOnError) throw Object.assign(new Error(message), { status: 400 });
     return { error: message };
   }
@@ -64,6 +93,7 @@ export async function sendMail({ subject, html, text }, { throwOnError = false, 
 
 function friendlyError(err) {
   const code = err?.code || err?.errors?.[0]?.code;
+  if (code === 'EAUTH' && emailManaged()) return 'The email service rejected the API key.';
   if (code === 'EAUTH') return 'The email server refused the username or password. For Gmail, use an app password.';
   if (['ECONNREFUSED', 'ECONNECTION', 'ESOCKET', 'ETIMEDOUT', 'EDNS', 'ENOTFOUND', 'EHOSTUNREACH'].includes(code))
     return 'Could not connect to the email server. Check the server name, the port and the secure option.';
@@ -76,14 +106,17 @@ const esc = (s) =>
 export { esc };
 
 /** Wraps content in a simple, mobile-friendly email layout. */
-export function layout({ heading, intro = '', body = '', cta, ctaUrl, accent = '#5b5bd6' }) {
+export async function layout({ heading, intro = '', body = '', cta, ctaUrl, accent }) {
+  const settings = await getSettings();
+  accent = accent || settings.accentColor || '#5b5bd6';
+  const appName = esc(settings.appName || 'Planner');
   return `<!doctype html><html><body style="margin:0;background:#f4f4f8;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1c1c28">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f8;padding:24px 12px">
   <tr><td align="center">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e6e6ef">
       <tr><td style="height:6px;background:${accent}"></td></tr>
       <tr><td style="padding:28px 28px 8px">
-        <div style="font-size:13px;color:#6b6b80;letter-spacing:.02em">Planner</div>
+        <div style="font-size:13px;color:#6b6b80;letter-spacing:.02em">${appName}</div>
         <h1 style="margin:6px 0 0;font-size:22px;line-height:1.3;color:#1c1c28">${heading}</h1>
         ${intro ? `<p style="margin:10px 0 0;font-size:15px;line-height:1.55;color:#4a4a5e">${intro}</p>` : ''}
       </td></tr>
@@ -94,7 +127,7 @@ export function layout({ heading, intro = '', body = '', cta, ctaUrl, accent = '
           : '<tr><td style="height:20px"></td></tr>'
       }
     </table>
-    <div style="font-size:12px;color:#8a8a9c;margin-top:14px">Sent by your Planner. You can change email preferences in Settings.</div>
+    <div style="font-size:12px;color:#8a8a9c;margin-top:14px">${appName} · ${settings.language === 'fr' ? 'Vous pouvez modifier vos préférences email dans les Paramètres.' : 'You can change email preferences in Settings.'}</div>
   </td></tr></table></body></html>`;
 }
 

@@ -1,4 +1,5 @@
-import { DatabaseSync } from 'node:sqlite';
+import { createClient } from '@libsql/client';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,18 +7,56 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
 export const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
+// Files saved before scans moved into the database; kept so old documents still open.
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
+// Locally the database is a file in data/; online it is a Turso database (DATABASE_URL + DATABASE_AUTH_TOKEN).
+const remoteUrl = process.env.DATABASE_URL;
+if (!remoteUrl) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 export const DB_PATH = path.join(DATA_DIR, 'planner.db');
-export const db = new DatabaseSync(DB_PATH);
+export const DB_LOCATION = remoteUrl ? remoteUrl.replace(/\?.*$/, '') : DB_PATH;
+const client = createClient({
+  url: remoteUrl || `file:${DB_PATH.replace(/\\/g, '/')}`,
+  authToken: process.env.DATABASE_AUTH_TOKEN,
+});
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 5000;
-`);
+// Queries made inside transaction() automatically run on that transaction.
+const txStore = new AsyncLocalStorage();
+const conn = () => txStore.getStore() || client;
+const clean = (args) => args.map((a) => (a === undefined ? null : typeof a === 'boolean' ? (a ? 1 : 0) : a));
+
+export const db = {
+  async get(sql, ...args) {
+    const r = await conn().execute({ sql, args: clean(args) });
+    return r.rows[0] ? { ...r.rows[0] } : undefined;
+  },
+  async all(sql, ...args) {
+    const r = await conn().execute({ sql, args: clean(args) });
+    return r.rows.map((row) => ({ ...row }));
+  },
+  async run(sql, ...args) {
+    const r = await conn().execute({ sql, args: clean(args) });
+    return { changes: r.rowsAffected, lastInsertRowid: r.lastInsertRowid === undefined ? null : Number(r.lastInsertRowid) };
+  },
+  async exec(sql) {
+    await conn().executeMultiple(sql);
+  },
+};
+
+export async function transaction(fn) {
+  if (txStore.getStore()) return fn();
+  const tx = await client.transaction('write');
+  try {
+    const result = await txStore.run(tx, fn);
+    await tx.commit();
+    return result;
+  } catch (err) {
+    await tx.rollback().catch(() => {});
+    throw err;
+  } finally {
+    tx.close();
+  }
+}
 
 // Schema migrations: each entry runs once, in order. Never edit a shipped entry, append new ones.
 const MIGRATIONS = [
@@ -139,29 +178,48 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // 2: attestation modes per institution, holidays, cancellation reasons.
+  `
+  ALTER TABLE categories ADD COLUMN attestation_mode TEXT;
+  ALTER TABLE categories ADD COLUMN attestation_offset_hours REAL NOT NULL DEFAULT 0;
+  ALTER TABLE categories ADD COLUMN attestation_signer TEXT NOT NULL DEFAULT '';
+  ALTER TABLE categories ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+  ALTER TABLE categories ADD COLUMN attestation_since TEXT;
+  UPDATE categories SET attestation_mode = 'hours' WHERE attestation_every_hours IS NOT NULL;
+
+  ALTER TABLE events ADD COLUMN cancel_reason TEXT;
+
+  CREATE TABLE holidays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    cancel_classes INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+  // 3: scans are stored in the database itself, so nothing is lost on hosts without a persistent disk.
+  `
+  ALTER TABLE documents ADD COLUMN file_data BLOB;
+  ALTER TABLE documents ADD COLUMN thumb_data BLOB;
+  `,
 ];
 
-db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
-const row = db.prepare('SELECT version FROM schema_version').get();
-let version = row ? row.version : 0;
-if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
-while (version < MIGRATIONS.length) {
-  transaction(() => {
-    db.exec(MIGRATIONS[version]);
+/** Creates or upgrades the schema. Called once before the server starts listening. */
+export async function initDb() {
+  if (!remoteUrl) await client.executeMultiple('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+  await client.execute('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  const row = (await client.execute('SELECT version FROM schema_version')).rows[0];
+  let version = row ? Number(row.version) : 0;
+  if (!row) await client.execute({ sql: 'INSERT INTO schema_version (version) VALUES (?)', args: [0] });
+  while (version < MIGRATIONS.length) {
+    // One statement at a time: works the same on a local file and on Turso.
+    const statements = MIGRATIONS[version]
+      .split(/;\s*(?:\n|$)/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await client.batch([...statements, { sql: 'UPDATE schema_version SET version = ?', args: [version + 1] }], 'write');
     version += 1;
-    db.prepare('UPDATE schema_version SET version = ?').run(version);
-  });
-}
-
-export function transaction(fn) {
-  db.exec('BEGIN');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
   }
 }
 
@@ -183,11 +241,15 @@ export const DEFAULT_SETTINGS = {
   digestEnabled: true,
   digestTime: '07:00',
   smtp: { host: '', port: 587, secure: false, user: '', pass: '', from: '' },
+  appName: 'Planner',
+  accentColor: '#5b5bd6',
+  // The welcome guide: where she stopped, and every answer she gave (also read by the developer).
+  onboarding: { completed: false, completedAt: null, step: 0, answers: {} },
 };
 
-export function getSettings() {
+export async function getSettings() {
   const out = structuredClone(DEFAULT_SETTINGS);
-  for (const { key, value } of db.prepare('SELECT key, value FROM settings').all()) {
+  for (const { key, value } of await db.all('SELECT key, value FROM settings')) {
     try {
       out[key] = JSON.parse(value);
     } catch {
@@ -197,14 +259,15 @@ export function getSettings() {
   return out;
 }
 
-export function saveSettings(patch) {
-  const stmt = db.prepare(
-    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
-  );
-  transaction(() => {
+export async function saveSettings(patch) {
+  await transaction(async () => {
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_SETTINGS)) continue;
-      stmt.run(key, JSON.stringify(value));
+      await db.run(
+        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        key,
+        JSON.stringify(value)
+      );
     }
   });
   return getSettings();

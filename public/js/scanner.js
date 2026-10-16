@@ -242,8 +242,8 @@ export function openScanner(opts = {}) {
       if (pdfs.length && (imgs.length || pages.length || pdfs.length > 1)) {
         return toast(t('Add either one PDF, or one or more photos — not both.'), { type: 'error' });
       }
-      const tooBig = files.find((f) => f.size > 25 * 1024 * 1024);
-      if (tooBig) return toast(t('This file is larger than 25 MB.'), { type: 'error' });
+      const tooBig = files.find((f) => f.size > 15 * 1024 * 1024);
+      if (tooBig) return toast(t('This file is larger than 15 MB.'), { type: 'error' });
       if (pdfs.length) {
         pdfFile = pdfs[0];
         if (!titleTouched && !meta.title) meta.title = suggestTitle(pdfFile.name);

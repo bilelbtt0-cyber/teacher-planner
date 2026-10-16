@@ -40,8 +40,15 @@ media.addEventListener('change', () => applyTheme());
 export function applyTheme() {
   const pref = state.settings?.theme || 'system';
   const dark = pref === 'dark' || (pref === 'system' && media.matches);
-  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  const accent = state.settings?.accentColor;
+  if (accent && /^#[0-9a-f]{6}$/i.test(accent)) root.style.setProperty('--accent', accent);
+  else root.style.removeProperty('--accent');
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', accent || '#5b5bd6');
 }
+
+export const appName = () => state.settings?.appName || 'Planner';
 
 export function applySettings() {
   setLanguage(state.settings?.language || 'en');
