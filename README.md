@@ -70,13 +70,13 @@ Everything below uses free plans and needs no credit card. Render and Turso let 
 |---|---|---|
 | App | [Render](https://render.com) web service | Runs the site, redeploys automatically on every push to `main` |
 | Data | [Turso](https://turso.tech) database | Keeps all data and scans (Render's free disk is wiped on restart) |
-| Emails | [Brevo](https://www.brevo.com) | Sends reminder emails through its web API (Render's free plan blocks email ports) |
+| Emails | A Gmail account + [Google Apps Script](https://script.google.com) (or [Brevo](https://www.brevo.com)) | Sends reminder emails through a web request (Render's free plan blocks email ports) |
 | Wake-up | [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) | Calls `/api/health` every 10 minutes so the app never sleeps and reminders go out on time |
 
 ### Steps
 
 1. **Turso**: create a database (region close to Tunisia, e.g. Frankfurt). Copy its URL (`libsql://…`) and create a token.
-2. **Brevo** (optional, for emails): Senders → add and verify the address emails will come from. SMTP & API → create an API key.
+2. **Emails** (optional): with the Gmail account that should send reminders, follow the steps at the top of [docs/gmail-relay.gs](docs/gmail-relay.gs). It gives you a web app URL; choose a long secret. (Alternative: Brevo API key + verified sender.)
 3. **Render**: New + → **Blueprint** → choose this repository. Fill in:
 
    | Variable | Value |
@@ -85,7 +85,8 @@ Everything below uses free plans and needs no credit card. Render and Turso let 
    | `DATABASE_AUTH_TOKEN` | the Turso token |
    | `SETUP_CODE` | a code you choose and give to the teacher (she types it once to create her account) |
    | `APP_URL` | the Render address, e.g. `https://teacher-planner.onrender.com` (set it after the first deploy if needed) |
-   | `BREVO_API_KEY`, `EMAIL_FROM` | the Brevo key and the verified sender, e.g. `Agenda <agenda@gmail.com>` |
+   | `EMAIL_RELAY_URL`, `EMAIL_RELAY_SECRET` | the Apps Script web app URL and the same secret as in the script |
+   | `BREVO_API_KEY`, `EMAIL_FROM` | only if you use Brevo instead |
 
 4. **Pinger**: create a job that opens `https://<your-app>.onrender.com/api/health` every 10 minutes.
 5. Send the teacher the link and the invitation code. The welcome guide does the rest.

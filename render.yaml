@@ -26,7 +26,12 @@ services:
       # Public address of this service, used in email links, e.g. https://teacher-planner.onrender.com
       - key: APP_URL
         sync: false
-      # Brevo (free plan) for reminder emails: API key + a sender address verified in Brevo.
+      # Reminder emails, option 1 (recommended): Gmail relay made with Google Apps Script (docs/gmail-relay.gs).
+      - key: EMAIL_RELAY_URL
+        sync: false
+      - key: EMAIL_RELAY_SECRET
+        sync: false
+      # Reminder emails, option 2: Brevo API key + a sender address verified in Brevo.
       - key: BREVO_API_KEY
         sync: false
       - key: EMAIL_FROM

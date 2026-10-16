@@ -4,13 +4,38 @@ import { getPrimaryUser } from './auth.js';
 
 export const APP_URL = (process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
 
-// Online, emails go through Brevo's web API (hosts like Render block email ports).
-// Set BREVO_API_KEY and EMAIL_FROM (a sender address verified in Brevo), e.g. "Agenda <agenda@gmail.com>".
+// Online, hosts like Render block email ports, so emails go out through a web API instead:
+//  - EMAIL_RELAY_URL + EMAIL_RELAY_SECRET: a Google Apps Script that sends from a Gmail account
+//    (free, no phone verification; see docs/gmail-relay.gs), or
+//  - BREVO_API_KEY + EMAIL_FROM: Brevo's API with a verified sender, e.g. "Agenda <agenda@gmail.com>".
+const RELAY_URL = process.env.EMAIL_RELAY_URL || '';
+const RELAY_SECRET = process.env.EMAIL_RELAY_SECRET || '';
 const BREVO_KEY = process.env.BREVO_API_KEY || '';
 const EMAIL_FROM = process.env.EMAIL_FROM || '';
+const useRelay = () => !!(RELAY_URL && RELAY_SECRET);
+const useBrevo = () => !!(BREVO_KEY && EMAIL_FROM);
 
 /** True when the hosting provides the email service, so she has nothing to configure. */
-export const emailManaged = () => !!(BREVO_KEY && EMAIL_FROM);
+export const emailManaged = () => useRelay() || useBrevo();
+
+async function sendWithRelay({ to, subject, html, text, appName }) {
+  // Apps Script answers a POST with a redirect to the result; fetch follows it.
+  const res = await fetch(RELAY_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ secret: RELAY_SECRET, to, subject, html, text: text || subject, fromName: appName }),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30000),
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* Google returned an HTML page: usually the script is not deployed for "Anyone" */
+  }
+  if (!data) throw Object.assign(new Error('The email relay did not answer correctly. Check its deployment (access: Anyone).'), { code: 'EAPI' });
+  if (!data.ok) throw Object.assign(new Error(data.error || 'The email relay refused the email.'), { code: data.error === 'Unauthorized' ? 'EAUTH' : 'EAPI' });
+}
 
 export function emailConfigured(settings) {
   if (emailManaged()) return true;
@@ -79,7 +104,9 @@ export async function sendMail({ subject, html, text }, { throwOnError = false, 
     return { skipped: 'no-recipient' };
   }
   try {
-    if (emailManaged()) await sendWithBrevo({ to, subject, html, text, appName: settings.appName || 'Planner' });
+    const appName = settings.appName || 'Planner';
+    if (useRelay()) await sendWithRelay({ to, subject, html, text, appName });
+    else if (useBrevo()) await sendWithBrevo({ to, subject, html, text, appName });
     else await transport(settings).sendMail({ from: settings.smtp.from || settings.smtp.user, to, subject, html, text });
     await log(to, subject, 'sent');
     return { sent: true };
@@ -93,7 +120,9 @@ export async function sendMail({ subject, html, text }, { throwOnError = false, 
 
 function friendlyError(err) {
   const code = err?.code || err?.errors?.[0]?.code;
+  if (code === 'EAUTH' && useRelay()) return 'The email relay refused the secret. Check EMAIL_RELAY_SECRET.';
   if (code === 'EAUTH' && emailManaged()) return 'The email service rejected the API key.';
+  if (code === 'EAPI') return err.message;
   if (code === 'EAUTH') return 'The email server refused the username or password. For Gmail, use an app password.';
   if (['ECONNREFUSED', 'ECONNECTION', 'ESOCKET', 'ETIMEDOUT', 'EDNS', 'ENOTFOUND', 'EHOSTUNREACH'].includes(code))
     return 'Could not connect to the email server. Check the server name, the port and the secure option.';

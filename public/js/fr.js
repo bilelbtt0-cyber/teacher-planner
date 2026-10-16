@@ -864,4 +864,7 @@ export const FR = {
   'Where should your reminders arrive?': 'Où souhaitez-vous recevoir vos rappels ?',
   'Email reminders are ready. There is nothing else to set up.': 'Les rappels par email sont prêts. Rien d’autre à configurer.',
   'The email service rejected the API key.': 'Le service email a refusé la clé API.',
+  'The email relay refused the secret. Check EMAIL_RELAY_SECRET.': 'Le relais email a refusé le secret. Vérifiez EMAIL_RELAY_SECRET.',
+  'The email relay did not answer correctly. Check its deployment (access: Anyone).': 'Le relais email n’a pas répondu correctement. Vérifiez son déploiement (accès : Tout le monde).',
+  'The email relay refused the email.': 'Le relais email a refusé l’email.',
 };
