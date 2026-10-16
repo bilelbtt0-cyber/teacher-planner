@@ -856,6 +856,16 @@ export const FR = {
   'Invalid answers.': 'Réponses invalides.',
   'Your answers are too long.': 'Vos réponses sont trop longues.',
 
+  // ---- Front page
+  'Hello': 'Bonjour',
+  'Your planner, made simple.': 'Votre agenda, tout simplement.',
+  'Your classes, your reminders and your papers, together in one place.': 'Vos cours, vos rappels et vos papiers, réunis au même endroit.',
+  'Made with care, just for you.': 'Fait avec soin, rien que pour vous.',
+  'Welcome 👋': 'Bienvenue 👋',
+  'Welcome back 👋': 'Bon retour 👋',
+  'Let’s create your space. It takes one minute.': 'Créons votre espace. Cela prend une minute.',
+  'Sign in to find your planner.': 'Connectez-vous pour retrouver votre agenda.',
+
   // ---- Hosting
   'Invitation code': 'Code d’invitation',
   'The code you received with the link.': 'Le code reçu avec le lien.',

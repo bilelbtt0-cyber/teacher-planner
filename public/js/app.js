@@ -69,27 +69,34 @@ function showAuth(mode) {
   window.removeEventListener('hashchange', route);
   const setup = mode === 'setup';
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const hour = new Date().getHours();
+  const hello = hour < 18 ? t('Hello') : t('Good evening');
+  const day = new Date().getDate();
   app.innerHTML = `
     <div class="auth-page">
-      <div class="auth-art">
-        <div class="brand" style="padding:0"><div class="brand-logo" style="background:rgba(255,255,255,.2)">${icon('calendar')}</div>
-          <div class="brand-name">Planner</div></div>
-        <div>
-          <h1>${esc(t('Your schedule, reminders and attestations — all in one calm place.'))}</h1>
-          <ul>
-            <li><span class="ic">${icon('calendar')}</span>${esc(t('A clear overview of every class and appointment'))}</li>
-            <li><span class="ic">${icon('bellRing')}</span>${esc(t('Reminders in the app and by email'))}</li>
-            <li><span class="ic">${icon('attestation')}</span>${esc(t('Never forget an attestation again'))}</li>
-            <li><span class="ic">${icon('scan')}</span>${esc(t('Scan and organise all your documents'))}</li>
-          </ul>
+      <div class="auth-art soft">
+        <div class="brand" style="padding:0"><div class="brand-logo">${icon('calendar')}</div><div class="brand-name">Planner</div></div>
+        <div class="auth-hero">
+          <span class="auth-hello">${esc(hello)} ${hour < 18 ? '☀️' : '🌙'}</span>
+          <h1>${esc(t('Your planner, made simple.'))}</h1>
+          <p>${esc(t('Your classes, your reminders and your papers, together in one place.'))}</p>
         </div>
-        <div style="opacity:.7;font-size:13px;position:relative;z-index:1">${esc(t('Everything is saved and searchable.'))}</div>
+        <div class="auth-illus" aria-hidden="true">
+          <div class="ill-card ill-cal">
+            <div class="ill-cal-head"><span></span><span></span><span></span></div>
+            <div class="ill-cal-grid">${Array.from({ length: 21 }, (_, i) => `<i class="${i === 10 ? 'on' : ''}">${i === 10 ? day : ''}</i>`).join('')}</div>
+          </div>
+          <div class="ill-card ill-event"><span class="dot"></span><div><b>08:00</b><small></small></div></div>
+          <div class="ill-card ill-check">${icon('check')}<span></span></div>
+        </div>
+        <div class="auth-foot">${esc(t('Made with care, just for you.'))}</div>
       </div>
       <div class="auth-form-wrap">
         <form class="auth-form stack" novalidate>
+          <div class="auth-mobile-brand"><div class="brand-logo">${icon('calendar')}</div><div class="brand-name">Planner</div></div>
           <div>
-            <h2>${esc(setup ? t('Welcome! Let’s set up your planner') : t('Welcome back'))}</h2>
-            <p>${esc(setup ? t('Create your private account. It only takes a minute.') : t('Sign in to see your schedule.'))}</p>
+            <h2>${esc(setup ? t('Welcome 👋') : t('Welcome back 👋'))}</h2>
+            <p>${esc(setup ? t('Let’s create your space. It takes one minute.') : t('Sign in to find your planner.'))}</p>
           </div>
           <div class="form-error" hidden></div>
           ${
