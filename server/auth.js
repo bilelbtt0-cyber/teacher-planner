@@ -4,7 +4,9 @@ import { db } from './db.js';
 import { httpError } from './recurrence.js';
 
 const COOKIE = 'tp_session';
-const SESSION_DAYS = 30;
+// She stays signed in on her device: a session lasts a year and is renewed when she uses the app.
+const SESSION_DAYS = 365;
+const RENEW_AFTER_DAYS = 1;
 // Online, the very first account can only be created with this code, so a stranger who finds
 // the link before the teacher cannot claim the planner.
 const SETUP_CODE = (process.env.SETUP_CODE || '').trim();
@@ -31,15 +33,28 @@ function parseCookies(header = '') {
   return out;
 }
 
-async function createSession(res, req, userId) {
-  const token = crypto.randomBytes(32).toString('hex');
-  const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
-  await db.run('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', token, userId, expires.toISOString());
+function setSessionCookie(req, res, token, expires) {
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   res.setHeader(
     'Set-Cookie',
     `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`
   );
+}
+
+async function createSession(res, req, userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
+  await db.run('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)', token, userId, expires.toISOString());
+  setSessionCookie(req, res, token, expires);
+}
+
+/** Pushes the expiry a year ahead again, at most once a day, so an active device is never signed out. */
+async function renewSession(req, res, user) {
+  const remainingDays = (new Date(user.expiresAt) - Date.now()) / 86400000;
+  if (remainingDays > SESSION_DAYS - RENEW_AFTER_DAYS) return;
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400000);
+  await db.run('UPDATE sessions SET expires_at = ? WHERE token = ?', expires.toISOString(), user.token);
+  setSessionCookie(req, res, user.token, expires);
 }
 
 async function userFromRequest(req) {
@@ -54,12 +69,13 @@ async function userFromRequest(req) {
     await db.run('DELETE FROM sessions WHERE token = ?', token);
     return null;
   }
-  return { id: row.id, name: row.name, email: row.email, token };
+  return { id: row.id, name: row.name, email: row.email, token, expiresAt: row.expires_at };
 }
 
 export async function requireAuth(req, res, next) {
   const user = await userFromRequest(req);
   if (!user) return res.status(401).json({ error: 'Please sign in again.' });
+  await renewSession(req, res, user);
   req.user = user;
   next();
 }
@@ -91,6 +107,7 @@ authRouter.get('/me', async (req, res) => {
   if (!(await hasUser())) return res.json({ setupRequired: true, setupCodeRequired: !!SETUP_CODE });
   const user = await userFromRequest(req);
   if (!user) return res.json({ authenticated: false });
+  await renewSession(req, res, user);
   res.json({ authenticated: true, user: { id: user.id, name: user.name, email: user.email } });
 });
 
