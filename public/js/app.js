@@ -321,6 +321,13 @@ function parseHash() {
 async function route(force) {
   if (!state.user) return;
   const { name, params } = parseHash();
+  // The welcome form is mandatory: until it is finished, every page leads back to it.
+  const locked = !state.settings?.onboarding?.completed;
+  document.body.classList.toggle('onboarding-lock', locked);
+  if (locked && name !== 'welcome') {
+    location.hash = '#/welcome';
+    return;
+  }
   if (typeof force !== 'string' && name === currentRoute && !params._r) {
     // Same page, different query (e.g. a new search): let the view react if it can.
     window.dispatchEvent(new CustomEvent('route-params', { detail: params }));

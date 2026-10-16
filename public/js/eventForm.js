@@ -460,8 +460,8 @@ export function openEventForm(opts = {}) {
               </div>`
               : `<div class="grid-3">
                 <div class="field"><label>${esc(t('Date'))}</label><input class="input" type="date" name="date" value="${v.date}" required></div>
-                <div class="field"><label>${esc(t('Start'))}</label><input class="input" type="time" name="startTime" value="${v.startTime}" step="300" required></div>
-                <div class="field"><label>${esc(t('End'))}</label><input class="input" type="time" name="endTime" value="${v.endTime}" step="300" required></div>
+                <div class="field"><label>${esc(t('Start'))}</label><input class="input" type="time" name="startTime" value="${v.startTime}" step="60" required></div>
+                <div class="field"><label>${esc(t('End'))}</label><input class="input" type="time" name="endTime" value="${v.endTime}" step="60" required></div>
               </div>
               <div class="flex wrap" style="justify-content:space-between">
                 <div class="duration-chips">${[45, 60, 90, 120, 180, 240]

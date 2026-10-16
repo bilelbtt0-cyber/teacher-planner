@@ -862,3 +862,22 @@ body.route-welcome .fab { display: none; }
   .auth-form-wrap { background: linear-gradient(180deg, #fff7ef 0%, var(--bg) 280px); align-items: start; padding-top: 48px; }
 }
 :root[data-theme='dark'] .auth-form-wrap { background: var(--bg); }
+
+/* ---------- Mandatory welcome form ---------- */
+body.onboarding-lock .sidebar .nav,
+body.onboarding-lock .sidebar-cta,
+body.onboarding-lock .user-chip,
+body.onboarding-lock .mobile-nav,
+body.onboarding-lock .fab,
+body.onboarding-lock .topbar .new-btn,
+body.onboarding-lock .topbar [data-bell],
+body.onboarding-lock .topbar .quick-search { display: none !important; }
+body.onboarding-lock .content { padding-bottom: 48px; }
+.req { color: var(--danger); font-weight: 700; }
+.wiz-q.missing { background: var(--danger-soft); border-radius: 12px; padding: 10px 12px; margin: 0 -12px; }
+.wiz-q.missing .wiz-q-label { color: var(--danger-text); }
+.wiz-missing { display: flex; align-items: center; gap: 6px; color: var(--danger-text); font-size: 13px; font-weight: 600; }
+.wiz-inst.missing, .wiz-slot.missing { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); position: relative; }
+.wiz-inst.missing::after, .wiz-slot.missing::after { content: attr(data-missing-text); display: block; width: 100%; color: var(--danger-text); font-size: 13px; font-weight: 600; margin-top: 8px; }
+.wiz-slot.missing { background: var(--danger-soft); }
+@media (max-width: 860px) { body.onboarding-lock .wiz-foot { bottom: 0; } }

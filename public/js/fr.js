@@ -866,6 +866,20 @@ export const FR = {
   'Let’s create your space. It takes one minute.': 'Créons votre espace. Cela prend une minute.',
   'Sign in to find your planner.': 'Connectez-vous pour retrouver votre agenda.',
 
+  // ---- Mandatory form & flexible classes
+  'Please answer this question.': 'Merci de répondre à cette question.',
+  'Please answer the questions marked *.': 'Merci de répondre aux questions marquées d’un *.',
+  'required': 'obligatoire',
+  'Back to my planner': 'Retour à mon agenda',
+  'Please complete it once before using your planner.': 'À remplir une fois avant d’utiliser votre agenda.',
+  'Give it a name and choose how it gives attestations.': 'Indiquez un nom et la façon dont il délivre les attestations.',
+  'Check the times and choose the institution.': 'Vérifiez les horaires et choisissez l’établissement.',
+  'Add at least one weekly class (or a photo of your timetable).': 'Ajoutez au moins un cours (ou une photo de votre emploi du temps).',
+  'How often': 'Fréquence',
+  'Every 2 weeks (from this week)': 'Une semaine sur deux (dès cette semaine)',
+  'Every 2 weeks (from next week)': 'Une semaine sur deux (dès la semaine prochaine)',
+  'every 2 weeks': 'une semaine sur deux',
+
   // ---- Hosting
   'Invitation code': 'Code d’invitation',
   'The code you received with the link.': 'Le code reçu avec le lien.',

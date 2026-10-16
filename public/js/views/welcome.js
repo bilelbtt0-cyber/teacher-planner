@@ -133,7 +133,7 @@ export async function render(root) {
   A.wishes ||= { list: [], timeWaster: '', other: '' };
 
   function newInstitution(i) {
-    return { id: uid(), categoryId: null, name: '', color: CATEGORY_COLORS[i % CATEGORY_COLORS.length], mode: 'none', every: '', offset: '', signer: '', notes: '' };
+    return { id: uid(), categoryId: null, name: '', color: CATEGORY_COLORS[i % CATEGORY_COLORS.length], mode: '', every: '', offset: '', signer: '', notes: '' };
   }
   function newSlot() {
     const last = A.timetable.slots[A.timetable.slots.length - 1];
@@ -147,6 +147,7 @@ export async function render(root) {
       categoryId: last?.categoryId || (activeCategories().length === 1 ? activeCategories()[0].id : ''),
       location: '',
       kind: 'class',
+      every: last?.every || '1',
       seriesId: null,
       count: 0,
     };
@@ -171,7 +172,10 @@ export async function render(root) {
     },
   };
 
+  let drawnStep = step;
   function draw() {
+    if (drawnStep !== step) missingKeys = new Set();
+    drawnStep = step;
     const st = STEPS[step];
     const visible = STEPS.slice(1, -1);
     root.innerHTML = `
@@ -197,7 +201,7 @@ export async function render(root) {
               <button class="btn ghost" data-back>${icon('arrowL', 'sm')}${esc(t('Back'))}</button>
               <span class="spacer"></span>
               <span class="small muted hide-sm">${esc(t('Step {a} of {b}', { a: step, b: visible.length }))}</span>
-              <button class="btn" data-skip>${esc(t('Skip'))}</button>
+              <span class="small muted"><span class="req">*</span> ${esc(t('required'))}</span>
               <button class="btn primary" data-next>${esc(step === STEPS.length - 2 ? t('Finish') : t('Save & continue'))}${icon('arrowR', 'sm')}</button>
             </div>`
               : ''
@@ -217,8 +221,11 @@ export async function render(root) {
     `<div class="segmented" data-radio="${name}">${options
       .map(([v, l]) => `<button type="button" data-val="${v}" class="${value === v ? 'active' : ''}">${esc(t(l))}</button>`)
       .join('')}</div>`;
-  const q = (label, control, hint = '') =>
-    `<div class="wiz-q"><div class="wiz-q-label">${esc(label)}</div>${hint ? `<div class="hint">${esc(hint)}</div>` : ''}<div class="wiz-q-control">${control}</div></div>`;
+  // Questions given a key are required: marked with * and checked before moving on.
+  let missingKeys = new Set();
+  const missingNote = (text) => `<div class="wiz-missing">${icon('alertCircle', 'sm')}<span>${esc(text)}</span></div>`;
+  const q = (label, control, hint = '', key = '') =>
+    `<div class="wiz-q ${key && missingKeys.has(key) ? 'missing' : ''}" ${key ? `data-q="${key}"` : ''}><div class="wiz-q-label">${esc(label)}${key ? ' <span class="req">*</span>' : ''}</div>${hint ? `<div class="hint">${esc(hint)}</div>` : ''}<div class="wiz-q-control">${control}</div>${key && missingKeys.has(key) ? missingNote(t('Please answer this question.')) : ''}</div>`;
 
   // ---------- step views ----------
   const VIEWS = {
@@ -230,11 +237,12 @@ export async function render(root) {
         <ul class="wiz-points">
           <li>${icon('clock')}<span>${esc(t('About 5 minutes'))}</span></li>
           <li>${icon('check')}<span>${esc(t('Saved at every step — stop and continue whenever you like'))}</span></li>
+          ${ob.completed ? '' : `<li>${icon('info')}<span>${esc(t('Please complete it once before using your planner.'))}</span></li>`}
           <li>${icon('edit')}<span>${esc(t('Everything can be changed later in Settings'))}</span></li>
         </ul>
         <div class="flex wrap" style="justify-content:center;margin-top:8px">
           <button class="btn primary lg" data-start>${esc(ob.completed ? t('Review my answers step by step') : maxVisited > 0 ? t('Continue where I stopped') : t('Let’s start'))}${icon('arrowR')}</button>
-          <button class="btn ghost lg" data-later>${esc(t('Later'))}</button>
+          ${ob.completed ? `<a class="btn ghost lg" href="#/today">${esc(t('Back to my planner'))}</a>` : `<button class="btn ghost lg" data-logout>${esc(t('Sign out'))}</button>`}
         </div>
       </div>`,
 
@@ -242,7 +250,7 @@ export async function render(root) {
       const a = A.about;
       return `${header(t('About you'), t('A few details so the planner feels like yours.'))}
         <div class="stack">
-          ${q(t('Your name'), `<input class="input" name="name" value="${esc(a.name)}" maxlength="80">`)}
+          ${q(t('Your name'), `<input class="input" name="name" value="${esc(a.name)}" maxlength="80">`, '', 'name')}
           ${q(t('Language'), yesNo('language', a.language, [['fr', 'Français'], ['en', 'English']]))}
           ${q(t('Name of your planner'), `<input class="input" name="appName" value="${esc(a.appName)}" placeholder="${esc(t('e.g. Marwa’s planner'))}" maxlength="40">`, t('Shown at the top of the app and in your emails. Leave empty to keep “Planner”.'))}
           ${q(
@@ -255,13 +263,16 @@ export async function render(root) {
           ${q(t('Theme'), yesNo('theme', a.theme, [['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']]))}
           ${q(
             t('Which devices will you use?'),
-            `<div class="pills">${DEVICES.map((d) => `<button type="button" class="pill ${a.devices.includes(d.value) ? 'active' : ''}" data-multi="devices" data-val="${d.value}">${esc(t(d.label))}</button>`).join('')}</div>`
+            `<div class="pills">${DEVICES.map((d) => `<button type="button" class="pill ${a.devices.includes(d.value) ? 'active' : ''}" data-multi="devices" data-val="${d.value}">${esc(t(d.label))}</button>`).join('')}</div>`,
+            '',
+            'devices'
           )}
-          ${q(t('Will you scan your attestations with your phone?'), yesNo('phoneScan', a.phoneScan))}
+          ${q(t('Will you scan your attestations with your phone?'), yesNo('phoneScan', a.phoneScan), '', 'phoneScan')}
           ${q(
             t('Is your computer usually on during the day?'),
             yesNo('computerOn', a.computerOn, [['yes', 'Yes'], ['sometimes', 'Sometimes'], ['no', 'No']]),
-            t('While the app runs on your computer, reminder emails are only sent when it is on.')
+            t('While the app runs on your computer, reminder emails are only sent when it is on.'),
+            'computerOn'
           )}
         </div>`;
     },
@@ -272,7 +283,7 @@ export async function render(root) {
         <div class="stack">
           ${I.rows
             .map(
-              (r, i) => `<div class="wiz-inst" data-row="${r.id}" style="--c:${r.color}">
+              (r, i) => `<div class="wiz-inst ${missingKeys.has('row:' + r.id) ? 'missing' : ''}" data-row="${r.id}" style="--c:${r.color}" data-missing-text="${esc(t('Give it a name and choose how it gives attestations.'))}">
               <div class="flex">
                 <span class="wiz-inst-num" style="background:${r.color}">${i + 1}</span>
                 <input class="input" data-f="name" value="${esc(r.name)}" placeholder="${esc(t('Name, e.g. Lycée Pilote Ariana'))}" maxlength="120" style="font-weight:600">
@@ -295,7 +306,7 @@ export async function render(root) {
                     : ''
                 }
                 ${
-                  r.mode !== 'none'
+                  r.mode && r.mode !== 'none'
                     ? `<div class="grid-2" style="margin-top:12px">
                     <div class="field"><label>${esc(t('Who gives or signs it?'))}</label><input class="input" data-f="signer" value="${esc(r.signer)}" placeholder="${esc(t('e.g. the director, the secretariat'))}" maxlength="200"></div>
                     <div class="field"><label>${esc(t('Notes'))}</label><input class="input" data-f="notes" value="${esc(r.notes)}" placeholder="${esc(t('e.g. ask before the 25th'))}" maxlength="500"></div>
@@ -309,7 +320,7 @@ export async function render(root) {
           <button type="button" class="btn soft" data-add-inst style="align-self:flex-start">${icon('plus', 'sm')}${esc(t('Add another institution'))}</button>
           <div class="wiz-sub">${esc(t('A few more details'))}</div>
           ${q(t('Is there a deadline to collect your attestations?'), `<input class="input" name="deadline" value="${esc(I.deadline)}" placeholder="${esc(t('e.g. before the end of each month, before payment'))}">`)}
-          ${q(t('Does one attestation sometimes cover several sessions?'), yesNo('multiSessions', I.multiSessions))}
+          ${q(t('Does one attestation sometimes cover several sessions?'), yesNo('multiSessions', I.multiSessions), '', 'multiSessions')}
           ${q(t('Have you forgotten attestations that you still need to collect?'), `<textarea class="textarea" name="backlog" rows="2" placeholder="${esc(t('Which ones, and for which dates?'))}">${esc(I.backlog)}</textarea>`, t('We can add them so the app reminds you.'))}
         </div>`;
     },
@@ -325,21 +336,25 @@ export async function render(root) {
             <div class="field"><label>${esc(t('First day of the school year'))}</label><input class="input" type="date" name="yearStart" value="${esc(T.yearStart)}"></div>
             <div class="field"><label>${esc(t('Last day of the school year'))}</label><input class="input" type="date" name="yearEnd" value="${esc(T.yearEnd)}"></div>
           </div>
-          <div class="wiz-sub">${esc(t('Weekly classes'))}</div>
+          ${missingKeys.has('year') ? missingNote(t('Please check the dates of the school year.')) : ''}
+          <div class="wiz-sub">${esc(t('Weekly classes'))} <span class="req">*</span></div>
           <div class="tip">${icon('info')}<span>${esc(t('Classes are added from {from} to {to}. Past weeks are not created.', { from: fmtDate(from), to: fmtDate(T.yearEnd) }))}</span></div>
           <div class="stack tight">
             ${T.slots
               .map((sl) => {
                 if (sl.seriesId) {
                   const cat = cats.find((c) => c.id === Number(sl.categoryId));
-                  return `<div class="wiz-slot done">${icon('checkCircle')}<span class="strong">${esc(fmtWeekdayLong(sl.day))} ${esc(sl.start)}–${esc(sl.end)}</span>
+                  return `<div class="wiz-slot done">${icon('checkCircle')}<span class="strong">${esc(fmtWeekdayLong(sl.day))} ${esc(sl.start)}–${esc(sl.end)}</span>${sl.every && sl.every !== '1' ? `<span class="chip">${esc(t('every 2 weeks'))}</span>` : ''}
                     <span>${esc(sl.title)}</span>${cat ? `<span class="chip"><span class="cat-dot" style="background:${cat.color}"></span>${esc(cat.name)}</span>` : ''}
                     <span class="spacer"></span><span class="small muted">${esc(tn(sl.count, '{n} session in your calendar', '{n} sessions in your calendar'))}</span></div>`;
                 }
-                return `<div class="wiz-slot" data-slot="${sl.id}">
+                return `<div class="wiz-slot ${missingKeys.has('slot:' + sl.id) ? 'missing' : ''}" data-slot="${sl.id}" data-missing-text="${esc(t('Check the times and choose the institution.'))}">
                   <select class="select" data-s="day">${order.map((d) => `<option value="${d}" ${Number(sl.day) === d ? 'selected' : ''}>${esc(fmtWeekdayLong(d))}</option>`).join('')}</select>
-                  <input class="input" type="time" data-s="start" value="${esc(sl.start)}" step="300">
-                  <input class="input" type="time" data-s="end" value="${esc(sl.end)}" step="300">
+                  <select class="select" data-s="every" title="${esc(t('How often'))}">${[['1', 'Every week'], ['2a', 'Every 2 weeks (from this week)'], ['2b', 'Every 2 weeks (from next week)']]
+                    .map(([v, l]) => `<option value="${v}" ${String(sl.every || '1') === v ? 'selected' : ''}>${esc(t(l))}</option>`)
+                    .join('')}</select>
+                  <input class="input" type="time" data-s="start" value="${esc(sl.start)}" step="60">
+                  <input class="input" type="time" data-s="end" value="${esc(sl.end)}" step="60">
                   <input class="input grow" data-s="title" value="${esc(sl.title)}" placeholder="${esc(t('Class, e.g. Maths 3A'))}" maxlength="200">
                   <select class="select" data-s="categoryId"><option value="">${esc(t('— Institution —'))}</option>${cats.map((c) => `<option value="${c.id}" ${Number(sl.categoryId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
                   <input class="input" data-s="location" value="${esc(sl.location)}" placeholder="${esc(t('Room'))}" maxlength="100" style="max-width:110px">
@@ -349,6 +364,7 @@ export async function render(root) {
               })
               .join('')}
           </div>
+          ${missingKeys.has('slots') ? missingNote(t('Add at least one weekly class (or a photo of your timetable).')) : ''}
           <div class="flex wrap">
             <button type="button" class="btn soft" data-add-slot>${icon('plus', 'sm')}${esc(t('Add a weekly class'))}</button>
             <button type="button" class="btn ghost" data-photo>${icon('camera', 'sm')}${esc(T.photoDocId ? t('Timetable photo saved ✓') : t('Or save a photo of your paper timetable'))}</button>
@@ -412,7 +428,7 @@ export async function render(root) {
             t('Your day and the attestations still missing.')
           )}
           <div class="tip">${icon('bellRing')}<span>${esc(t('When a class needing an attestation starts, the app also reminds you to ask for it on the spot.'))}</span></div>
-          ${q(t('Would you also like reminders by SMS or WhatsApp?'), yesNo('smsWish', R.smsWish, [['yes', 'Yes, I would like that'], ['no', 'No need']]), t('This needs an external service, which may have a small cost.'))}
+          ${q(t('Would you also like reminders by SMS or WhatsApp?'), yesNo('smsWish', R.smsWish, [['yes', 'Yes, I would like that'], ['no', 'No need']]), t('This needs an external service, which may have a small cost.'), 'smsWish')}
         </div>`;
     },
 
@@ -423,14 +439,14 @@ export async function render(root) {
         // Online, the planner sends emails itself: she only says where to receive them.
         return `${header(t('Your emails'), t('Where should your reminders arrive?'))}
           <div class="stack">
-            ${q(t('Send my reminders to'), `<input class="input" type="email" name="recipient" value="${esc(E.recipient)}" placeholder="${esc(state.user.email)}">`)}
+            ${q(t('Send my reminders to'), `<input class="input" type="email" name="recipient" value="${esc(E.recipient)}" placeholder="${esc(state.user.email)}">`, '', 'recipient')}
             <div class="tip">${icon('checkCircle')}<span>${esc(t('Email reminders are ready. There is nothing else to set up.'))}</span></div>
             ${q(t('Should someone else also receive the reminders?'), `<input class="input" name="ccWish" value="${esc(E.ccWish)}" placeholder="${esc(t('Optional: who, and which address?'))}">`)}
           </div>`;
       }
       return `${header(t('Your emails'), t('Where should reminders arrive, and which mailbox should send them?'))}
         <div class="stack">
-          ${q(t('Send my reminders to'), `<input class="input" type="email" name="recipient" value="${esc(E.recipient)}" placeholder="${esc(state.user.email)}">`)}
+          ${q(t('Send my reminders to'), `<input class="input" type="email" name="recipient" value="${esc(E.recipient)}" placeholder="${esc(state.user.email)}">`, '', 'recipient')}
           ${q(t('Which email service do you use?'), `<div class="pills">${Object.entries(PROVIDERS).map(([k, v]) => `<button type="button" class="pill ${E.provider === k ? 'active' : ''}" data-provider="${k}">${esc(t(v.label))}</button>`).join('')}</div>`)}
           ${q(t('Would you prefer a separate address just for sending reminders?'), yesNo('dedicated', E.dedicated, [['yes', 'Yes (recommended)'], ['no', 'No, use mine']]), t('e.g. a new Gmail address like my.planner@gmail.com.'))}
           ${
@@ -464,14 +480,14 @@ export async function render(root) {
       const W = A.wishes;
       return `${header(t('Documents & wishes'), t('Last step! Tell us what you keep, and what would make the app even more useful.'))}
         <div class="stack">
-          ${q(t('Which documents do you want to keep here?'), `<div class="pills">${DOC_TYPES.map((d) => `<button type="button" class="pill ${D.docTypes.includes(d) ? 'active' : ''}" data-multi="docTypes" data-val="${d}">${esc(t(d))}</button>`).join('')}</div>`)}
+          ${q(t('Which documents do you want to keep here?'), `<div class="pills">${DOC_TYPES.map((d) => `<button type="button" class="pill ${D.docTypes.includes(d) ? 'active' : ''}" data-multi="docTypes" data-val="${d}">${esc(t(d))}</button>`).join('')}</div>`, '', 'docTypes')}
           ${q(
             t('How should scanned attestations be named?'),
             `${yesNo('naming', D.naming, [['default', 'Attestation — Institution — Month'], ['date', 'Institution — Date'], ['other', 'Other']])}
              ${D.naming === 'other' ? `<input class="input" name="namingOther" value="${esc(D.namingOther)}" placeholder="${esc(t('Describe your format'))}" style="margin-top:8px">` : ''}`
           )}
-          ${q(t('Do you already have paper attestations to add?'), yesNo('backlogCount', D.backlogCount, [['none', 'None'], ['few', 'Fewer than 20'], ['some', '20 to 100'], ['many', 'More than 100']]), t('We can plan a session to scan and file them together.'))}
-          ${q(t('Are some of your attestations in Arabic?'), yesNo('arabic', D.arabic))}
+          ${q(t('Do you already have paper attestations to add?'), yesNo('backlogCount', D.backlogCount, [['none', 'None'], ['few', 'Fewer than 20'], ['some', '20 to 100'], ['many', 'More than 100']]), t('We can plan a session to scan and file them together.'), 'backlogCount')}
+          ${q(t('Are some of your attestations in Arabic?'), yesNo('arabic', D.arabic), '', 'arabic')}
           ${q(t('Do you send these documents to someone?'), `<input class="input" name="sendTo" value="${esc(D.sendTo)}" placeholder="${esc(t('e.g. the administration, an accountant'))}">`)}
           <div class="wiz-sub">${esc(t('What would you like next?'))}</div>
           <div class="wiz-checks">${WISHES.map(
@@ -596,7 +612,8 @@ export async function render(root) {
       for (const sl of T.slots) {
         if (sl.seriesId || !sl.title.trim()) continue;
         if (!sl.start || !sl.end || sl.end <= sl.start) throw new Error(t('Check the times of “{name}”: the end must be after the start.', { name: sl.title }));
-        const date = firstOnWeekday(from, Number(sl.day));
+        // Every 2 weeks: she picks whether it starts this week or next week (week A / week B).
+        const date = sl.every === '2b' ? addDaysStr(firstOnWeekday(from, Number(sl.day)), 7) : firstOnWeekday(from, Number(sl.day));
         if (date > T.yearEnd) continue;
         const res = await api.post('/api/events', {
           title: sl.title.trim(),
@@ -606,7 +623,7 @@ export async function render(root) {
           start: `${date}T${sl.start}`,
           end: `${date}T${sl.end}`,
           reminders: state.settings.defaultReminders,
-          recurrence: { freq: 'weekly', interval: 1, byweekday: [Number(sl.day)], until: T.yearEnd },
+          recurrence: { freq: 'weekly', interval: sl.every && sl.every !== '1' ? 2 : 1, byweekday: [Number(sl.day)], until: T.yearEnd },
         });
         sl.seriesId = res.event.seriesId;
         sl.count = res.count;
@@ -634,15 +651,62 @@ export async function render(root) {
     async documents() {},
   };
 
-  async function next(skip = false) {
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function findMissing() {
+    const key = STEPS[step].key;
+    const m = new Set();
+    if (key === 'about') {
+      if (!A.about.name.trim()) m.add('name');
+      if (!A.about.devices.length) m.add('devices');
+      if (!A.about.phoneScan) m.add('phoneScan');
+      if (!A.about.computerOn) m.add('computerOn');
+    } else if (key === 'institutions') {
+      const rows = A.institutions.rows;
+      if (!rows.some((r) => r.name.trim())) m.add('row:' + rows[0]?.id);
+      for (const r of rows) {
+        if (!r.name.trim() && !r.mode) continue; // an empty extra card is simply ignored
+        if (!r.name.trim() || !r.mode || (r.mode === 'hours' && !(Number(r.every) > 0))) m.add('row:' + r.id);
+      }
+      if (!A.institutions.multiSessions) m.add('multiSessions');
+    } else if (key === 'timetable') {
+      const T = A.timetable;
+      if (!T.yearStart || !T.yearEnd || T.yearEnd <= T.yearStart) m.add('year');
+      if (!T.slots.some((x) => x.seriesId || x.title.trim()) && !T.photoDocId) m.add('slots');
+      const needInstitution = activeCategories().length > 0;
+      for (const x of T.slots) {
+        if (x.seriesId || !x.title.trim()) continue;
+        if (!x.start || !x.end || x.end <= x.start || (needInstitution && !x.categoryId)) m.add('slot:' + x.id);
+      }
+    } else if (key === 'reminders') {
+      if (!A.reminders.smsWish) m.add('smsWish');
+    } else if (key === 'email') {
+      if (!EMAIL_RE.test((A.email.recipient || '').trim())) m.add('recipient');
+    } else if (key === 'documents') {
+      if (!A.documents.docTypes.length) m.add('docTypes');
+      if (!A.documents.backlogCount) m.add('backlogCount');
+      if (!A.documents.arabic) m.add('arabic');
+    }
+    return m;
+  }
+
+  async function next() {
     if (busy) return;
     collect();
+    missingKeys = findMissing();
+    if (missingKeys.size) {
+      const y = window.scrollY;
+      draw();
+      window.scrollTo(0, y);
+      root.querySelector('.missing')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast(t('Please answer the questions marked *.'), { type: 'error' });
+      return;
+    }
     const key = STEPS[step].key;
-    const btn = root.querySelector(skip ? '[data-skip]' : '[data-next]');
+    const btn = root.querySelector('[data-next]');
     busy = true;
     setBusy(btn, true);
     try {
-      if (!skip && APPLY[key]) await APPLY[key]();
+      if (APPLY[key]) await APPLY[key]();
       const isLast = step === STEPS.length - 2;
       step += 1;
       maxVisited = Math.max(maxVisited, step);
@@ -660,6 +724,8 @@ export async function render(root) {
   // ---------- interactions ----------
   const rerender = () => {
     collect();
+    // Highlights disappear as soon as the answer is given.
+    if (missingKeys.size) missingKeys = findMissing();
     const y = window.scrollY;
     draw();
     window.scrollTo(0, y);
@@ -670,6 +736,10 @@ export async function render(root) {
     maxVisited = Math.max(maxVisited, 1);
     draw();
   });
+  on(root, 'click', '[data-logout]', async () => {
+    const { logout } = await import('../app.js');
+    logout();
+  });
   on(root, 'click', '[data-later]', async () => {
     try {
       await persist({ step: Math.max(ob.step || 0, 0) });
@@ -679,7 +749,6 @@ export async function render(root) {
     location.hash = '#/today';
   });
   on(root, 'click', '[data-next]', () => next(false));
-  on(root, 'click', '[data-skip]', () => next(true));
   on(root, 'click', '[data-back]', () => {
     collect();
     step = Math.max(0, step - 1);
