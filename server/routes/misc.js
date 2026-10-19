@@ -6,7 +6,7 @@ import { nowIn, addDays, datePart, isDateOnly, isValidTimezone, toDate } from '.
 import { serializeEvent, KINDS } from './events.js';
 import { serializeDoc, DOC_SELECT, ALLOWED } from './documents.js';
 import { categoryProgress, teachingHours } from '../attestation.js';
-import { sendMail, emailConfigured, emailManaged, recipient, layout } from '../mailer.js';
+import { sendMail, emailConfigured, emailManaged, recipient, layout, itemRow } from '../mailer.js';
 import { tick } from '../scheduler.js';
 
 export const miscRouter = Router();
@@ -227,6 +227,8 @@ async function publicSettings() {
     emailManaged: emailManaged(),
     smtpConfigured: emailConfigured(s),
     recipient: await recipient(s),
+    // Online the data lives in the hosted database; locally, in a file on this computer.
+    storage: process.env.DATABASE_URL ? 'cloud' : 'local',
   };
 }
 
@@ -334,6 +336,27 @@ miscRouter.post('/settings/test-email', async (req, res) => {
     { throwOnError: true, force: true }
   );
   res.json({ ok: true, to: await recipient(s) });
+});
+
+/** An example reminder email, to show what she will receive before choosing how often. */
+miscRouter.get('/settings/email-preview', async (req, res) => {
+  const s = await getSettings();
+  const fr = s.language === 'fr';
+  const html = await layout({
+    heading: fr ? 'À venir' : 'Coming up',
+    body:
+      itemRow({ title: fr ? 'Maths — 3e année A' : 'Maths — Year 3A', meta: fr ? 'demain · 08:00–10:00 · Salle 12' : 'tomorrow · 08:00–10:00 · Room 12', color: '#e5484d' }) +
+      itemRow({
+        title: fr ? 'Physique — 2e année B' : 'Physics — Year 2B',
+        meta: `${fr ? 'demain · 14:00–15:30' : 'tomorrow · 14:00–15:30'}<br><b style="color:#b4232a">${fr ? 'Pensez à demander votre attestation lors de cette séance.' : 'Remember to ask for your attestation at this session.'}</b>`,
+        color: '#0090ff',
+        badge: fr ? 'Attestation à demander' : 'Attestation needed',
+      }),
+    cta: fr ? 'Ouvrir mon agenda' : 'Open my planner',
+    ctaUrl: '#',
+  });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 });
 
 miscRouter.get('/settings/email-log', async (req, res) => {

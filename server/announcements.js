@@ -9,48 +9,54 @@ import { sendMail, layout, esc, APP_URL } from './mailer.js';
 const MESSAGES = {
   'courses-library': {
     fr: (ctx) => ({
-      subject: 'Nouveau dans votre agenda : vos cours et leurs résumés',
-      heading: 'Votre agenda a été mis à jour',
+      subject: 'Votre agenda a été mis à jour',
+      heading: 'Quelques nouveautés pour vous',
       intro: 'Suite à vos remarques, voici ce qui change :',
       items: [
-        ['📚 Mes cours', 'Enregistrez chaque cours une seule fois (nom, établissement, salle, durée). Pour planifier une séance, choisissez le cours puis la date : tout le reste se remplit tout seul.'],
-        ['📝 Un résumé pour chaque cours', 'Attachez à chaque cours son résumé et vos fichiers (PDF, photos, Word, PowerPoint…). Pendant la séance, ouvrez-le en un clic depuis « Aujourd’hui » ou depuis la séance dans l’agenda.'],
+        ['📚 Mes cours', 'Enregistrez chaque cours une seule fois, avec son résumé et vos fichiers. Pour planifier une séance, choisissez le cours puis la date : le reste se remplit tout seul. En classe, ouvrez le support en un clic.'],
         [
           '🗓️ Plus d’emploi du temps fixe',
           'Les séances ne se répètent plus automatiquement : vous ajoutez chaque séance quand vous en avez besoin.' +
             (ctx.generated === 1
-              ? ' La séance à venir créée par l’ancien emploi du temps est toujours là : vous pouvez la retirer en un clic dans Paramètres → Données & sauvegarde.'
+              ? ' La séance à venir créée par l’ancien emploi du temps est toujours là : vous pouvez la retirer dans Paramètres → Mes données.'
               : ctx.generated
-                ? ` Les ${ctx.generated} séances à venir créées par l’ancien emploi du temps sont toujours là : vous pouvez les retirer en un clic dans Paramètres → Données & sauvegarde.`
+                ? ` Les ${ctx.generated} séances à venir créées par l’ancien emploi du temps sont toujours là : vous pouvez les retirer dans Paramètres → Mes données.`
                 : ''),
         ],
+        ['☀️ Le mot du jour', 'Chaque matin, quelques mots sur votre journée en ouvrant l’application : vos cours, vos pauses, et un petit conseil quand il le faut.'],
+        ['📷 Un vrai scanner', 'Prenez une page en photo : l’application la trouve, la redresse et la nettoie toute seule. Elle lit aussi le texte, pour retrouver un document grâce aux mots qu’il contient.'],
+        ['📄 Votre planning en PDF', 'Dans « Aujourd’hui » ou dans l’agenda : choisissez la semaine ou le mois, et le PDF se télécharge, prêt à imprimer.'],
+        ['⚙️ Des paramètres plus simples', 'Quatre rubriques au lieu de huit, et vos rappels en un seul choix : Doux, Normal ou Suivi rapproché.'],
         ['🧾 Fiches de paie retirées', 'Le type « Fiche de paie » n’existe plus. Vos documents déjà enregistrés sont conservés, dans « Autre ».'],
       ],
-      cta: 'Découvrir Mes cours',
-      notifTitle: 'Nouveau : Mes cours et leurs résumés',
-      notifBody: 'Enregistrez vos cours une fois, attachez-y leur résumé, et planifiez une séance en deux clics.',
+      cta: 'Ouvrir mon agenda',
+      notifTitle: 'Votre agenda a été mis à jour',
+      notifBody: 'Mes cours, le mot du jour, un vrai scanner, le planning en PDF et des paramètres plus simples.',
     }),
     en: (ctx) => ({
-      subject: 'New in your planner: your courses and their summaries',
-      heading: 'Your planner has been updated',
+      subject: 'Your planner has been updated',
+      heading: 'A few new things for you',
       intro: 'Following your feedback, here is what changes:',
       items: [
-        ['📚 My courses', 'Save each course once (name, institution, room, duration). To plan a session, pick the course and the date: everything else is filled in for you.'],
-        ['📝 A summary for each course', 'Attach its summary and your files (PDF, photos, Word, PowerPoint…) to each course. During the lesson, open it in one click from “Today” or from the session in the calendar.'],
+        ['📚 My courses', 'Save each course once, with its summary and your files. To plan a session, pick the course and the date: the rest fills itself in. In class, open the support in one click.'],
         [
           '🗓️ No more fixed timetable',
           'Sessions no longer repeat automatically: you add each session when you need it.' +
             (ctx.generated === 1
-              ? ' The upcoming session created by the old timetable is still there: you can remove it in one click in Settings → Data & backup.'
+              ? ' The upcoming session created by the old timetable is still there: you can remove it in Settings → My data.'
               : ctx.generated
-                ? ` The ${ctx.generated} upcoming sessions created by the old timetable are still there: you can remove them in one click in Settings → Data & backup.`
+                ? ` The ${ctx.generated} upcoming sessions created by the old timetable are still there: you can remove them in Settings → My data.`
                 : ''),
         ],
+        ['☀️ A word for your day', 'Every morning, a few words about your day when you open the app: your classes, your breaks, and a little advice when it helps.'],
+        ['📷 A real scanner', 'Take a photo of a page: the app finds it, straightens it and cleans it up by itself. It also reads the text, so you can find a document by the words it contains.'],
+        ['📄 Your schedule as a PDF', 'From “Today” or the calendar: choose the week or the month, and the PDF downloads, ready to print.'],
+        ['⚙️ Simpler settings', 'Four sections instead of eight, and your reminders in a single choice: Gentle, Normal or Close follow-up.'],
         ['🧾 Payslips removed', 'The “Payslip” document type is gone. Documents you already saved are kept, under “Other”.'],
       ],
-      cta: 'Discover My courses',
-      notifTitle: 'New: My courses and their summaries',
-      notifBody: 'Save your courses once, attach their summary, and plan a session in two clicks.',
+      cta: 'Open my planner',
+      notifTitle: 'Your planner has been updated',
+      notifBody: 'My courses, a word for your day, a real scanner, your schedule as a PDF and simpler settings.',
     }),
   },
 };
@@ -79,8 +85,8 @@ export async function buildAnnouncement(key, language, now) {
     .join('');
   return {
     subject: m.subject,
-    html: await layout({ heading: m.heading, intro: m.intro, body, cta: m.cta, ctaUrl: `${APP_URL}/#/courses` }),
-    text: [m.heading, '', ...m.items.map(([title, text]) => `${title}\n${text}\n`), `${m.cta}: ${APP_URL}/#/courses`].join('\n'),
+    html: await layout({ heading: m.heading, intro: m.intro, body, cta: m.cta, ctaUrl: `${APP_URL}/#/today` }),
+    text: [m.heading, '', ...m.items.map(([title, text]) => `${title}\n${text}\n`), `${m.cta}: ${APP_URL}/#/today`].join('\n'),
     notifTitle: m.notifTitle,
     notifBody: m.notifBody,
   };
