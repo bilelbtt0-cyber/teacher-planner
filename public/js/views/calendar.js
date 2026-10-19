@@ -2,7 +2,7 @@ import { api, qs } from '../api.js';
 import { t, getLanguage, dateToWall, nowWall, fmtTime } from '../i18n.js';
 import { state, subscribe, activeCategories, eventColor } from '../store.js';
 import { esc, icon, on, toast, errorToast, hasOpenModal } from '../ui.js';
-import { openEventDetails, openEventForm, askScope, attestationState } from '../eventForm.js';
+import { openEventDetails, openEventForm, attestationState } from '../eventForm.js';
 
 const VIEW_KEY = 'planner.calView';
 const HIDDEN_KEY = 'planner.calHidden';
@@ -43,6 +43,7 @@ export async function render(root, params) {
       </div>
       <h2 data-cal-title></h2>
       <span class="spacer"></span>
+      <button class="btn" data-export-pdf title="${esc(t('Download my schedule (PDF)'))}">${icon('download', 'sm')}<span class="hide-sm">PDF</span></button>
       <input type="date" class="input" data-goto style="width:auto;height:38px" title="${esc(t('Go to date'))}" aria-label="${esc(t('Go to date'))}">
       <div class="segmented" data-views>
         <button data-view="dayGridMonth">${esc(t('Month'))}</button>
@@ -205,24 +206,19 @@ export async function render(root, params) {
 
   async function move(info) {
     const e = info.event.extendedProps.ev;
-    let scope = 'this';
-    if (e.seriesId) {
-      scope = await askScope('move');
-      if (!scope) return info.revert();
-    }
     const allDay = info.event.allDay;
     const start = allDay ? `${info.event.startStr.slice(0, 10)}T00:00` : dateToWall(info.event.start);
     const end = info.event.end ? (allDay ? `${info.event.endStr.slice(0, 10)}T00:00` : dateToWall(info.event.end)) : null;
     try {
-      const res = await api.patch(`/api/events/${e.id}/move`, { start, end, allDay, scope });
+      await api.patch(`/api/events/${e.id}/move`, { start, end, allDay });
       calendar.refetchEvents();
       const oldStart = e.start;
       const oldEnd = e.end;
-      toast(res.affected > 1 ? t('{n} sessions moved', { n: res.affected }) : t('Appointment moved'), {
+      toast(t('Appointment moved'), {
         type: 'success',
-        action: res.affected === 1 ? t('Undo') : undefined,
+        action: t('Undo'),
         onAction: async () => {
-          await api.patch(`/api/events/${e.id}/move`, { start: oldStart, end: oldEnd, allDay: e.allDay, scope: 'this' });
+          await api.patch(`/api/events/${e.id}/move`, { start: oldStart, end: oldEnd, allDay: e.allDay });
           calendar.refetchEvents();
         },
       });
@@ -237,6 +233,10 @@ export async function render(root, params) {
 
   on(root, 'click', '[data-nav]', (e, b) => calendar[b.dataset.nav]());
   on(root, 'click', '[data-view]', (e, b) => calendar.changeView(b.dataset.view));
+  on(root, 'click', '[data-export-pdf]', async () => {
+    const { exportSchedulePdf } = await import('../exportPdf.js');
+    exportSchedulePdf();
+  });
   root.querySelector('[data-goto]').addEventListener('change', (e) => {
     if (e.target.value) calendar.gotoDate(e.target.value);
   });

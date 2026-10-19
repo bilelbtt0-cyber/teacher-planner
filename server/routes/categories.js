@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, transaction, getSettings } from '../db.js';
-import { httpError } from '../recurrence.js';
+import { httpError } from '../errors.js';
 import { recomputeCategory, categoryProgress, ATTESTATION_MODES } from '../attestation.js';
 import { nowIn } from '../time.js';
 

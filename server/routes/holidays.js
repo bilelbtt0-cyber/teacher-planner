@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, transaction } from '../db.js';
-import { httpError } from '../recurrence.js';
+import { httpError } from '../errors.js';
 import { isDateOnly, addDays } from '../time.js';
 import { recomputeCategory, TEACHING_KINDS } from '../attestation.js';
 
@@ -14,15 +14,6 @@ const serialize = (h) => ({
 });
 
 const KIND_LIST = TEACHING_KINDS.map((k) => `'${k}'`).join(',');
-
-/** Holidays that cancel classes; loaded once when a series of sessions is created. */
-export const cancellingHolidays = () => db.all('SELECT * FROM holidays WHERE cancel_classes = 1');
-
-/** The holiday covering a wall-clock start, if any. */
-export function holidayFor(holidays, start) {
-  const day = start.slice(0, 10);
-  return holidays.find((h) => h.start_date <= day && h.end_date >= day) || null;
-}
 
 async function cancelInside(h) {
   const rows = await db.all(

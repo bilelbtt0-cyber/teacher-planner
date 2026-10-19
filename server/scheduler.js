@@ -1,6 +1,7 @@
 import { db, getSettings } from './db.js';
 import { nowIn, addMinutes, toDate, timePart, datePart, inWindow, addDays } from './time.js';
 import { sendMail, layout, itemRow, esc, APP_URL } from './mailer.js';
+import { runAnnouncements } from './announcements.js';
 
 const STRINGS = {
   en: {
@@ -257,6 +258,7 @@ export async function tick() {
     await runReminders(settings, now, s, f, cats);
     await runAttestations(settings, now, s, f, cats);
     await runDigest(settings, now, s, f, cats);
+    await runAnnouncements(settings, now, notify);
     if (now.endsWith(':00')) await cleanup();
   } catch (err) {
     console.error('[scheduler]', err);

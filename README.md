@@ -1,6 +1,6 @@
 # Planner — schedule, reminders & attestations for a teacher
 
-A private web app that shows a teacher's whole schedule, reminds her of appointments in the app and by email, and makes sure she **never forgets an attestation**. It also keeps a searchable library of all her scanned documents.
+A private web app that shows a teacher's whole schedule, reminds her of appointments in the app and by email, and makes sure she **never forgets an attestation**. She saves each course once, with its summary and files, so planning a session takes two clicks and the lesson support is at hand in class. It also keeps a searchable library of all her scanned documents.
 
 The interface is available in French and English (chosen at first launch; can be changed in Settings).
 
@@ -27,14 +27,15 @@ The first visit asks you to create the account (name, email, password, language)
 
 | Area | What it does |
 |---|---|
-| **Today** | Greeting, today's timeline with a "now" marker, upcoming 7 days, hours done/planned this week and month, missing attestations with one-click actions, progress toward the next hours-based attestation. |
+| **Today** | Greeting, today's timeline with a "now" marker and an *Open the support* button on each course session, upcoming 7 days, hours done/planned this week and month, missing attestations with one-click actions, progress toward the next hours-based attestation. |
 | **Calendar** | Month / week / day / list views. Click or drag to create, drag to move, resize to change duration. Colour per institution, filters, show/hide cancelled sessions. Keyboard: ←/→, `T` today, `M` `W` `D` `L` views, `N` new appointment, `/` search. |
-| **Appointments** | Type (class, exam, meeting, personal, other), institution, room, notes, all-day, quick duration chips, repetition (daily / weekly on chosen days / monthly, until a date or N sessions, defaults to the end of the school year), several reminders each optionally by email. |
+| **My courses** | A library of the courses she teaches: name, type, institution, room, usual duration, a **summary of the lesson** and its **files** (PDF, photos, Word, PowerPoint, Excel, or paper pages scanned with the camera). *Plan a session* opens a pre-filled appointment; only the date and time are left to choose. *Open the support* shows the summary in large print (adjustable, full screen) and the files, from the course, from the session or from Today. Courses can be archived. |
+| **Appointments** | Pick a saved course to fill in everything, or enter it by hand (with *Also save it in My courses*). Type (class, exam, meeting, personal, other), institution, room, notes, all-day, quick duration chips, several reminders each optionally by email. There is **no fixed timetable**: sessions do not repeat, each one is added when needed (*Duplicate* copies one). |
 | **Attestations** | Any appointment can require an attestation (with a note: who to ask, what to bring). Institutions can have a rule such as *"one attestation every 30 teaching hours"*: the app counts the hours and flags the right session automatically. Once a flagged session ends, she gets an in-app notification **and an email, repeated until she marks it received or not needed**. The red banner stays visible on every page meanwhile. |
 | **Mark as received** | Scan it now, upload a file, link an existing document, or just mark it. One attestation can cover several sessions (select several and mark them together). Snooze ("remind me tomorrow") and Undo are available everywhere. |
-| **Documents / scanner** | Camera capture (one photo per page) or PDF / photo upload / drag-and-drop. Multi-page, rotate, crop, *Clean* or *B&W* filter. Saved as a named PDF with a thumbnail, type, date, institution, period, hours, tags and linked sessions. Searchable and filterable by year, type and institution. |
+| **Documents / scanner** | Camera capture (one photo per page) or PDF / photo upload / drag-and-drop. Multi-page, rotate, crop, *Clean* or *B&W* filter. Saved as a named PDF with a thumbnail, type (attestation, certificate, contract, course material, other), date, institution, period, hours, tags and linked sessions. Searchable and filterable by year, type and institution. Course files appear here too, with their course. |
 | **Search & history** | Nothing is ever lost: search all appointments and documents by word, period (this month, last school year…), institution, type, attestation status. Shows total teaching hours, and exports CSV (opens in Excel) or prints. |
-| **Settings** | Profile & password, institutions (colour, hours rule, archive), default reminders, nag frequency, quiet hours, morning summary email, browser notifications, email account, language, theme (light/dark/auto), week start, working hours, time zone, backup, `.ics` export. |
+| **Settings** | Profile & password, institutions (colour, hours rule, archive), default reminders, nag frequency, quiet hours, morning summary email, browser notifications, email account, language, theme (light/dark/auto), week start, working hours, time zone, backup, `.ics` export, and (only when there are some) a one-click removal of the upcoming sessions created by the old weekly timetable. |
 
 ---
 
@@ -48,7 +49,8 @@ Settings → **Email** → choose *Gmail*, *Outlook* or *Yahoo*, then enter the 
 Emails sent by the app:
 - the reminders she chose (e.g. 1 day before);
 - **missing attestations**, at the end of the session and then every *N* hours (default: daily), outside quiet hours. A single email lists everything still missing;
-- an optional **morning summary** (today's schedule + missing attestations).
+- an optional **morning summary** (today's schedule + missing attestations);
+- once, after an update that changes how she works, a short **"what's new"** email (also shown in the app). It is queued by the database migration only if her account already exists, and sent outside quiet hours.
 
 > On a computer, reminders go out only while the app is running (missed ones are caught up when it starts). Online, the app runs all the time and emails go through Brevo: see below.
 
@@ -58,7 +60,7 @@ Emails sent by the app:
 
 - **Locally**, everything lives in `data/planner.db`, scanned documents included.
 - **Online**, everything lives in the Turso database (Turso also keeps its own short-term restore points).
-- Settings → Data → **Download backup** gives a `.zip` with `data.json` (all appointments, institutions, attestations, settings, readable) and a `documents/` folder holding every scan as a real PDF or image.
+- Settings → Data → **Download backup** gives a `.zip` with `data.json` (all appointments, courses, institutions, attestations, settings, readable) and a `documents/` folder holding every scan and course file as a real file.
 
 ---
 
@@ -111,24 +113,27 @@ server/
   index.js          Express app, static files, error handling
   db.js             Database (local SQLite file or Turso online), migrations, settings
   auth.js           Account setup, login, sessions (scrypt + HttpOnly cookie)
+  errors.js         User-facing HTTP errors
   time.js           Wall-clock time helpers (user time zone)
-  recurrence.js     Repetition rules → occurrences
   attestation.js    "Every N hours" rule engine and progress
   scheduler.js      Reminders, attestation nagging, morning summary (every minute)
-  mailer.js         Email via SMTP (local) or Brevo API (online) + templates
-  routes/           events, categories (institutions), holidays, documents, misc (dashboard, search, settings, export)
+  announcements.js  One-time "what's new" email + notification after an update
+  mailer.js         Email via SMTP (local), Gmail relay or Brevo API (online) + templates
+  routes/           events, courses, categories (institutions), holidays, documents, misc (dashboard, search, settings, export)
 public/
   index.html, css/app.css
   js/app.js         Shell, router, notifications panel, banner
   js/eventForm.js   Appointment editor, details panel, attestation actions
+  js/courses.js     Course editor and the lesson support viewer
   js/scanner.js     Camera / upload, page editor, PDF generation
-  js/views/         welcome (guide), today, calendar, attestations, documents, search, settings
+  js/views/         welcome (guide), today, calendar, courses, attestations, documents, search, settings
   js/i18n.js, fr.js Translations and date formatting
 ```
 
 ## Scenarios handled (highlights)
 
-- Editing a repeating series: *only this*, *this and following*, or *all*; moving by drag asks the same. Changing the repetition rebuilds the following sessions but **keeps past sessions and any with a received attestation or documents**.
+- No fixed timetable: every edit, move, cancellation or deletion applies to that one session. Sessions created earlier by the old weekly timetable stay as normal sessions; removing the upcoming ones (Settings → Data) **keeps past sessions and any with a received attestation or documents**.
+- Deleting a course deletes its summary and files but keeps its sessions in the calendar and the history; archiving hides it instead.
 - Cancelling a session keeps it in the history (struck through, excluded from hours); deleting is separate and warns about linked documents.
 - Hours rule recalculates when sessions are added, moved, cancelled or change institution. An attestation she has already handled is never changed automatically.
 - Several overdue attestations → one email, not one per session. Repeated scheduler runs never duplicate emails or notifications.

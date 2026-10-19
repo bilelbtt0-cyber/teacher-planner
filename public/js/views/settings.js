@@ -54,7 +54,7 @@ export async function render(root, params) {
     const ob = s.onboarding || {};
     box.innerHTML = `
       <section class="card settings-section" id="sec-personal">
-        <div class="card-header"><div style="flex:1"><h2>${esc(t('Personalisation'))}</h2><p>${esc(t('The welcome guide sets up your institutions, timetable and reminders from your answers.'))}</p></div>
+        <div class="card-header"><div style="flex:1"><h2>${esc(t('Personalisation'))}</h2><p>${esc(t('The welcome guide sets up your institutions, courses and reminders from your answers.'))}</p></div>
           ${ob.completed ? `<span class="chip success">${icon('check')}${esc(t('Completed'))}</span>` : `<span class="chip warning">${esc(t('Not finished'))}</span>`}</div>
         <div class="card-body flex wrap">
           <a class="btn primary" href="#/welcome">${icon('sparkles', 'sm')}${esc(ob.completed ? t('Open the welcome guide again') : t('Continue the welcome guide'))}</a>
@@ -217,6 +217,13 @@ export async function render(root, params) {
         <div class="card-body">
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Full backup'))}</div><div class="d">${esc(t('All appointments, settings and scanned documents in one .zip file.'))}</div></div>
             <div class="control"><a class="btn" href="/api/export/backup">${icon('download', 'sm')}${esc(t('Download backup'))}</a></div></div>
+          ${
+            generated
+              ? `<div class="setting-row"><div class="info"><div class="t">${esc(t('Sessions from the old weekly timetable'))}</div>
+                <div class="d">${esc(tn(generated, '{n} upcoming session was created in advance by the old weekly timetable. Remove it if it does not match your real schedule. Past sessions, and any with an attestation or a document, are kept.', '{n} upcoming sessions were created in advance by the old weekly timetable. Remove them if they do not match your real schedule. Past sessions, and any with an attestation or a document, are kept.'))}</div></div>
+                <div class="control"><button class="btn soft-danger" data-clear-generated>${icon('trash', 'sm')}${esc(t('Remove them'))}</button></div></div>`
+              : ''
+          }
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Export calendar'))}</div><div class="d">${esc(t('An .ics file you can import into Google Calendar, Outlook or your phone.'))}</div></div>
             <div class="control"><a class="btn" href="/api/export/calendar.ics">${icon('calendar', 'sm')}${esc(t('Export .ics'))}</a></div></div>
           <div class="setting-row"><div class="info"><div class="t">${esc(t('Sign out'))}</div><div class="d">${esc(t('You will need your password to come back.'))}</div></div>
@@ -434,6 +441,35 @@ export async function render(root, params) {
     }
   });
 
+  on(box, 'click', '[data-clear-generated]', async (e, b) => {
+    const ok = await confirmDialog({
+      title: t('Remove the sessions from the old timetable?'),
+      message: esc(tn(generated, '{n} upcoming session will be deleted. This cannot be undone.', '{n} upcoming sessions will be deleted. This cannot be undone.')),
+      confirm: t('Remove them'),
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(b, true);
+    try {
+      const res = await api.post('/api/events/generated/clear');
+      toast(tn(res.removed, '{n} session removed', '{n} sessions removed'), { type: 'success' });
+      changed();
+      await loadGenerated();
+    } catch (err) {
+      setBusy(b, false);
+      errorToast(err);
+    }
+  });
+
+  async function loadGenerated() {
+    try {
+      generated = (await api.get('/api/events/generated')).upcoming;
+    } catch {
+      generated = 0;
+    }
+    draw();
+  }
+
   async function loadHolidays() {
     try {
       holidays = await api.get('/api/holidays');
@@ -447,8 +483,10 @@ export async function render(root, params) {
     if (what === 'categories' || what === 'settings') draw();
   });
   let holidays = [];
+  let generated = 0;
   draw();
   loadHolidays();
+  loadGenerated();
   if (params.s) setTimeout(() => document.getElementById(`sec-${params.s}`)?.scrollIntoView({ block: 'start' }), 50);
   return unsub;
 }

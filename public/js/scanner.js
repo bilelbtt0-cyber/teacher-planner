@@ -2,18 +2,19 @@ import { api } from './api.js';
 import { t, tn, todayStr, nowWall, fmtShort, fmtTime, fmtMonthYear, minutesBetween, hoursLabel, fileSize } from './i18n.js';
 import { state, categoryById, activeCategories, changed } from './store.js';
 import { esc, icon, openModal, confirmDialog, toast, errorToast, setBusy, on } from './ui.js';
+import { detectDocument, warpQuad, enhance, rotateCanvas, downscale, toDisplay, fromDisplay, FULL_QUAD } from './scanTools.js';
 
 export const DOC_TYPES = [
   { value: 'attestation', label: 'Attestation' },
   { value: 'certificate', label: 'Certificate' },
   { value: 'contract', label: 'Contract' },
-  { value: 'payslip', label: 'Payslip' },
+  { value: 'support', label: 'Course material' },
   { value: 'other', label: 'Other' },
 ];
 export const docTypeLabel = (v) => t(DOC_TYPES.find((d) => d.value === v)?.label || 'Other');
 
 let jsPdfPromise = null;
-function loadJsPdf() {
+export function loadJsPdf() {
   if (window.jspdf) return Promise.resolve(window.jspdf.jsPDF);
   if (!jsPdfPromise) {
     jsPdfPromise = new Promise((resolve, reject) => {
@@ -32,71 +33,12 @@ function loadJsPdf() {
 
 // ---------- Image processing ----------
 
-/** Draws a page (rotation + crop + filter) to a new canvas no larger than maxDim. */
+/** Draws a page (straightened, rotated, cleaned) to a new canvas no larger than maxDim. */
 function renderPage(page, maxDim = 2000, { crop = true, filter = true } = {}) {
-  const src = page.src;
-  const rot = ((page.rotation % 360) + 360) % 360;
-  const rw = rot % 180 === 0 ? src.width : src.height;
-  const rh = rot % 180 === 0 ? src.height : src.width;
-  const c = crop ? page.crop : { x: 0, y: 0, w: 1, h: 1 };
-  const cw = Math.max(1, Math.round(rw * c.w));
-  const ch = Math.max(1, Math.round(rh * c.h));
-  const scale = Math.min(1, maxDim / Math.max(cw, ch));
-
-  const out = document.createElement('canvas');
-  out.width = Math.max(1, Math.round(cw * scale));
-  out.height = Math.max(1, Math.round(ch * scale));
-  const ctx = out.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, out.width, out.height);
-  ctx.imageSmoothingQuality = 'high';
-  ctx.save();
-  ctx.scale(scale, scale);
-  ctx.translate(-rw * c.x, -rh * c.y);
-  ctx.translate(rw / 2, rh / 2);
-  ctx.rotate((rot * Math.PI) / 180);
-  ctx.drawImage(src, -src.width / 2, -src.height / 2);
-  ctx.restore();
-  if (filter && page.filter !== 'original') applyFilter(out, page.filter);
-  return out;
-}
-
-/** "Clean" brightens the paper and deepens the ink; "bw" does the same in grayscale with stronger contrast. */
-function applyFilter(canvas, mode) {
-  const ctx = canvas.getContext('2d');
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = img.data;
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < d.length; i += 16) hist[(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0]++;
-  const total = hist.reduce((a, b) => a + b, 0);
-  const pct = (p) => {
-    let acc = 0;
-    for (let v = 0; v < 256; v++) {
-      acc += hist[v];
-      if (acc >= total * p) return v;
-    }
-    return 255;
-  };
-  const low = pct(mode === 'bw' ? 0.04 : 0.02);
-  const high = Math.max(low + 30, pct(mode === 'bw' ? 0.7 : 0.85));
-  const range = high - low;
-  const lut = new Uint8ClampedArray(256);
-  for (let v = 0; v < 256; v++) {
-    let x = (v - low) / range;
-    x = Math.min(1, Math.max(0, x));
-    lut[v] = Math.round(255 * Math.pow(x, mode === 'bw' ? 1.5 : 1.15));
-  }
-  for (let i = 0; i < d.length; i += 4) {
-    if (mode === 'bw') {
-      const l = lut[(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0];
-      d[i] = d[i + 1] = d[i + 2] = l;
-    } else {
-      d[i] = lut[d[i]];
-      d[i + 1] = lut[d[i + 1]];
-      d[i + 2] = lut[d[i + 2]];
-    }
-  }
-  ctx.putImageData(img, 0, 0);
+  let c = crop ? warpQuad(page.src, page.quad, maxDim) : downscale(page.src, maxDim);
+  c = rotateCanvas(c, page.rotation);
+  if (filter) enhance(c, page.filter);
+  return c;
 }
 
 const canvasToBlob = (canvas, type = 'image/jpeg', q = 0.85) => new Promise((res) => canvas.toBlob(res, type, q));
@@ -114,7 +56,11 @@ async function loadImageFile(file) {
   }
 }
 
-const newPage = (src) => ({ src, rotation: 0, filter: 'clean', crop: { x: 0, y: 0, w: 1, h: 1 } });
+/** A new page: the sheet is found in the photo right away, so most of the time there is nothing to adjust. */
+function newPage(src) {
+  const quad = detectDocument(src);
+  return { src, rotation: 0, filter: 'clean', quad: quad || FULL_QUAD.map((q) => ({ ...q })), detected: !!quad };
+}
 const PDF_TYPES = ['application/pdf'];
 const IMG_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
@@ -123,12 +69,14 @@ const IMG_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 /**
  * opts.mode: 'choose' | 'camera' | 'upload' | 'files'
  * opts.files: File[] (for 'files'), opts.events: sessions to link, opts.markReceived: bool,
- * opts.document: an existing document whose file should be replaced.
+ * opts.document: an existing document whose file should be replaced,
+ * opts.course: a course the scan belongs to (its summary pages or handouts).
  * Resolves with the saved document, or null.
  */
 export function openScanner(opts = {}) {
   return new Promise((resolve) => {
     const replacing = opts.document || null;
+    const course = opts.course || null;
     let step = 'capture';
     let pages = [];
     let pdfFile = null;
@@ -140,10 +88,10 @@ export function openScanner(opts = {}) {
     const knownEvents = new Map((opts.events || []).filter(Boolean).map((e) => [e.id, e]));
     const firstEvent = (opts.events || []).filter(Boolean)[0];
     const meta = {
-      title: replacing?.title || '',
-      docType: replacing?.docType || 'attestation',
+      title: replacing?.title || (course ? course.title : ''),
+      docType: replacing?.docType || (course ? 'support' : 'attestation'),
       docDate: replacing?.docDate || todayStr(),
-      categoryId: replacing?.categoryId ?? firstEvent?.categoryId ?? null,
+      categoryId: replacing?.categoryId ?? firstEvent?.categoryId ?? course?.categoryId ?? null,
       periodFrom: replacing?.periodFrom || '',
       periodTo: replacing?.periodTo || '',
       hours: replacing?.hours ?? '',
@@ -151,7 +99,7 @@ export function openScanner(opts = {}) {
       notes: replacing?.notes || '',
       markReceived: opts.markReceived !== false,
     };
-    let titleTouched = !!replacing;
+    let titleTouched = !!replacing || !!course;
 
     const m = openModal({
       title: replacing ? t('Replace the file') : t('Scan or add a document'),
@@ -209,6 +157,7 @@ export function openScanner(opts = {}) {
     // ----- Step 1: capture -----
     function drawCapture() {
       stage.innerHTML = `
+        ${course ? `<div class="tip" style="margin-bottom:16px">${icon('book')}<span>${esc(t('These pages will be added to the course “{name}”.', { name: course.title }))}</span></div>` : ''}
         ${firstEvent ? `<div class="tip" style="margin-bottom:16px">${icon('link')}<span>${esc(tn(linked.size, 'This document will be linked to {n} session.', 'This document will be linked to {n} sessions.'))}</span></div>` : ''}
         <div class="capture-options">
           <button class="capture-opt" data-opt="camera"><span class="ic">${icon('camera', 'lg')}</span><span><div class="t">${esc(t('Use the camera'))}</div><div class="d">${esc(t('Take a photo of each page'))}</div></span></button>
@@ -279,13 +228,13 @@ export function openScanner(opts = {}) {
         cameraInput.click();
         return go(pages.length ? 'adjust' : 'capture');
       }
-      stage.innerHTML = `<div class="camera-view"><video autoplay playsinline muted></video><div class="guide"></div></div>
+      stage.innerHTML = `<div class="camera-view"><video autoplay playsinline muted></video><div class="guide"></div><canvas class="cam-overlay"></canvas></div>
         <div class="camera-controls">
           <button class="btn" data-cam-done ${pages.length ? '' : 'disabled'}>${esc(t('Done'))} (${pages.length})</button>
           <button class="shutter" data-shutter aria-label="${esc(t('Take photo'))}"></button>
           <button class="btn ghost" data-cam-cancel>${esc(t('Cancel'))}</button>
         </div>
-        <p class="small muted" style="text-align:center;margin-top:10px">${esc(t('Place the page inside the frame, in good light. Take one photo per page.'))}</p>`;
+        <p class="small muted" style="text-align:center;margin-top:10px">${esc(t('Place the sheet on a darker surface, in good light. When its outline turns green, take the photo. One photo per page.'))}</p>`;
       footer.innerHTML = '';
       const video = stage.querySelector('video');
       try {
@@ -294,6 +243,7 @@ export function openScanner(opts = {}) {
           audio: false,
         });
         video.srcObject = stream;
+        watchSheet(video, stage.querySelector('.cam-overlay'), stage.querySelector('.guide'));
       } catch (err) {
         stopCamera();
         toast(err.name === 'NotAllowedError' ? t('Camera access was refused. You can allow it in the browser settings, or choose files instead.') : t('No camera found. Choose files instead.'), { type: 'error' });
@@ -320,8 +270,41 @@ export function openScanner(opts = {}) {
     }
 
     function stopCamera() {
+      clearInterval(liveTimer);
       stream?.getTracks().forEach((tr) => tr.stop());
       stream = null;
+    }
+
+    // Outlines the sheet on the live picture, a few times per second.
+    let liveTimer = null;
+    function watchSheet(video, overlay, guide) {
+      clearInterval(liveTimer);
+      liveTimer = setInterval(() => {
+        if (!video.videoWidth || !overlay.isConnected) return;
+        const box = video.getBoundingClientRect();
+        overlay.width = box.width;
+        overlay.height = box.height;
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, box.width, box.height);
+        const q = detectDocument(video);
+        const found = q && q.some((p) => p.x > 0.01 && p.x < 0.99);
+        guide.hidden = !!found;
+        if (!found) return;
+        // The video is letterboxed inside its box (object-fit: contain).
+        const s = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+        const w = video.videoWidth * s;
+        const h = video.videoHeight * s;
+        const ox = (box.width - w) / 2;
+        const oy = (box.height - h) / 2;
+        ctx.beginPath();
+        q.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](ox + p.x * w, oy + p.y * h));
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(48, 164, 108, 0.18)';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#30a46c';
+        ctx.stroke();
+      }, 350);
     }
 
     // ----- Step 2: adjust -----
@@ -337,11 +320,15 @@ export function openScanner(opts = {}) {
               <div class="flex gap-sm wrap">
                 <button class="btn sm" data-rot="-90" title="${esc(t('Rotate left'))}">${icon('rotateL', 'sm')}</button>
                 <button class="btn sm" data-rot="90" title="${esc(t('Rotate right'))}">${icon('rotateR', 'sm')}</button>
-                <button class="btn sm" data-crop-reset title="${esc(t('Reset crop'))}">${icon('crop', 'sm')}${esc(t('Full page'))}</button>
+              </div></div>
+            <div class="tool-group"><span class="label">${esc(t('Edges of the page'))}</span>
+              <div class="flex gap-sm wrap">
+                <button class="btn sm" data-quad="auto" title="${esc(t('Find the page automatically'))}">${icon('wand', 'sm')}${esc(t('Detect'))}</button>
+                <button class="btn sm" data-quad="full" title="${esc(t('Keep the whole photo'))}">${icon('crop', 'sm')}${esc(t('Whole photo'))}</button>
               </div></div>
             <div class="tool-group"><span class="label">${esc(t('Look'))}</span>
               <div class="filter-opts">
-                <button data-filter="clean" class="${p.filter === 'clean' ? 'active' : ''}">${esc(t('Clean'))}</button>
+                <button data-filter="clean" class="${p.filter === 'clean' ? 'active' : ''}" title="${esc(t('White paper without shadows, colours kept (stamps, signatures)'))}">${esc(t('Clean'))}</button>
                 <button data-filter="bw" class="${p.filter === 'bw' ? 'active' : ''}">${esc(t('B&W'))}</button>
                 <button data-filter="original" class="${p.filter === 'original' ? 'active' : ''}">${esc(t('Original'))}</button>
               </div></div>
@@ -351,7 +338,8 @@ export function openScanner(opts = {}) {
                 <button class="btn sm icon-only" data-move="1" ${active === pages.length - 1 ? 'disabled' : ''} title="${esc(t('Move right'))}">${icon('chevronR', 'sm')}</button>
                 <button class="btn sm soft-danger" data-del-page>${icon('trash', 'sm')}${esc(t('Delete page'))}</button>
               </div></div>
-            <p class="small muted">${esc(t('Drag the corners to crop around the document.'))}</p>
+            <div class="tool-group"><span class="label">${esc(t('Result'))}</span><img class="scan-result" data-result alt=""></div>
+            <p class="small muted">${esc(p.detected ? t('The page was found automatically and will be straightened. Drag a corner if it is not quite right.') : t('Drag the four corners onto the corners of the page: it will be straightened.'))}</p>
           </div>
         </div>
         <div class="page-strip" style="margin-top:14px">
@@ -368,57 +356,111 @@ export function openScanner(opts = {}) {
       });
     }
 
+    function refreshResult() {
+      const p = pages[active];
+      const img = stage.querySelector('[data-result]');
+      const out = renderPage(p, 700);
+      if (img) img.src = out.toDataURL('image/jpeg', 0.8);
+      const thumb = stage.querySelector(`[data-thumb="${active}"]`);
+      if (thumb) thumb.src = renderPage(p, 200).toDataURL('image/jpeg', 0.7);
+    }
+
+    /** The photo with the four corners of the page, which she can drag (with a magnifier). */
     function drawEditorCanvas() {
       const p = pages[active];
       const wrap = stage.querySelector('[data-crop-wrap]');
-      const canvas = renderPage(p, 1100, { crop: false });
+      const canvas = renderPage(p, 1100, { crop: false, filter: false });
       wrap.innerHTML = '';
       wrap.appendChild(canvas);
-      const box = document.createElement('div');
-      box.className = 'crop-box';
-      box.innerHTML = ['nw', 'ne', 'sw', 'se'].map((h) => `<span class="crop-handle ${h}" data-h="${h}"></span>`).join('');
-      wrap.appendChild(box);
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('class', 'quad-svg');
+      svg.setAttribute('viewBox', '0 0 100 100');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      const shade = document.createElementNS(svgNS, 'path');
+      shade.setAttribute('class', 'quad-shade');
+      shade.setAttribute('fill-rule', 'evenodd');
+      const line = document.createElementNS(svgNS, 'polygon');
+      line.setAttribute('class', 'quad-line');
+      svg.append(shade, line);
+      wrap.appendChild(svg);
+      const handles = p.quad.map((_, i) => {
+        const h = document.createElement('span');
+        h.className = 'quad-handle';
+        h.dataset.corner = i;
+        wrap.appendChild(h);
+        return h;
+      });
+      const loupe = document.createElement('canvas');
+      loupe.className = 'quad-loupe';
+      loupe.width = loupe.height = 120;
+      loupe.hidden = true;
+      wrap.appendChild(loupe);
+
       const place = () => {
-        box.style.left = `${p.crop.x * 100}%`;
-        box.style.top = `${p.crop.y * 100}%`;
-        box.style.width = `${p.crop.w * 100}%`;
-        box.style.height = `${p.crop.h * 100}%`;
+        const pts = p.quad.map((q) => toDisplay(q, p.rotation));
+        const poly = pts.map((d) => `${d.x * 100},${d.y * 100}`).join(' ');
+        line.setAttribute('points', poly);
+        shade.setAttribute('d', `M0,0H100V100H0Z M${pts.map((d) => `${d.x * 100},${d.y * 100}`).join(' L')}Z`);
+        pts.forEach((d, i) => {
+          handles[i].style.left = `${d.x * 100}%`;
+          handles[i].style.top = `${d.y * 100}%`;
+        });
+      };
+      const showLoupe = (d) => {
+        const z = 2.5;
+        const cx = d.x * canvas.width;
+        const cy = d.y * canvas.height;
+        const scale = canvas.width / canvas.getBoundingClientRect().width;
+        const r = loupe.width / 2 / z * scale;
+        const lctx = loupe.getContext('2d');
+        lctx.fillStyle = '#000';
+        lctx.fillRect(0, 0, loupe.width, loupe.height);
+        lctx.drawImage(canvas, cx - r, cy - r, 2 * r, 2 * r, 0, 0, loupe.width, loupe.height);
+        lctx.strokeStyle = '#fff';
+        lctx.lineWidth = 1.5;
+        lctx.beginPath();
+        lctx.moveTo(loupe.width / 2 - 10, loupe.height / 2);
+        lctx.lineTo(loupe.width / 2 + 10, loupe.height / 2);
+        lctx.moveTo(loupe.width / 2, loupe.height / 2 - 10);
+        lctx.lineTo(loupe.width / 2, loupe.height / 2 + 10);
+        lctx.stroke();
+        // Shown on the other side of the finger, so it is never hidden by it.
+        loupe.style.left = d.x < 0.5 ? 'auto' : '8px';
+        loupe.style.right = d.x < 0.5 ? '8px' : 'auto';
+        loupe.style.top = '8px';
+        loupe.hidden = false;
       };
       place();
       let drag = null;
-      box.addEventListener('pointerdown', (e) => {
+      wrap.addEventListener('pointerdown', (e) => {
+        const h = e.target.closest('.quad-handle');
+        if (!h) return;
         e.preventDefault();
-        box.setPointerCapture(e.pointerId);
-        drag = { h: e.target.dataset.h || 'move', x: e.clientX, y: e.clientY, crop: { ...p.crop }, rect: canvas.getBoundingClientRect() };
+        h.setPointerCapture(e.pointerId);
+        drag = { i: Number(h.dataset.corner), rect: canvas.getBoundingClientRect() };
+        h.classList.add('active');
       });
-      box.addEventListener('pointermove', (e) => {
+      wrap.addEventListener('pointermove', (e) => {
         if (!drag) return;
-        const dx = (e.clientX - drag.x) / drag.rect.width;
-        const dy = (e.clientY - drag.y) / drag.rect.height;
-        const c = { ...drag.crop };
-        const MIN = 0.08;
-        if (drag.h === 'move') {
-          c.x = Math.min(1 - c.w, Math.max(0, c.x + dx));
-          c.y = Math.min(1 - c.h, Math.max(0, c.y + dy));
-        } else {
-          let x1 = c.x, y1 = c.y, x2 = c.x + c.w, y2 = c.y + c.h;
-          if (drag.h.includes('w')) x1 = Math.min(x2 - MIN, Math.max(0, x1 + dx));
-          if (drag.h.includes('e')) x2 = Math.max(x1 + MIN, Math.min(1, x2 + dx));
-          if (drag.h.includes('n')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
-          if (drag.h.includes('s')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
-          Object.assign(c, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
-        }
-        p.crop = c;
+        const d = {
+          x: Math.min(1, Math.max(0, (e.clientX - drag.rect.left) / drag.rect.width)),
+          y: Math.min(1, Math.max(0, (e.clientY - drag.rect.top) / drag.rect.height)),
+        };
+        p.quad[drag.i] = fromDisplay(d, p.rotation);
         place();
+        showLoupe(d);
       });
       const end = () => {
         if (!drag) return;
+        handles[drag.i].classList.remove('active');
         drag = null;
-        const thumb = stage.querySelector(`[data-thumb="${active}"]`);
-        if (thumb) thumb.src = renderPage(p, 200).toDataURL('image/jpeg', 0.7);
+        loupe.hidden = true;
+        refreshResult();
       };
-      box.addEventListener('pointerup', end);
-      box.addEventListener('pointercancel', end);
+      wrap.addEventListener('pointerup', end);
+      wrap.addEventListener('pointercancel', end);
+      refreshResult();
     }
 
     // ----- Step 3: details -----
@@ -458,7 +500,7 @@ export function openScanner(opts = {}) {
     }
 
     async function drawDetails() {
-      if (!candidates) {
+      if (!candidates && !course) {
         stage.innerHTML = '<div class="boot" style="height:200px"><div class="spinner"></div></div>';
         await loadCandidates();
         if (step !== 'details') return;
@@ -490,7 +532,7 @@ export function openScanner(opts = {}) {
           </form>
           <div class="stack">
             <div class="stack tight"><span class="label">${esc(t('Preview'))}</span>${preview}</div>
-            <div class="stack tight"><span class="label">${esc(t('Linked sessions'))} ${linked.size ? `<span class="badge primary">${linked.size}</span>` : ''}</span>
+            ${course ? `<div class="tip">${icon('book')}<span>${esc(t('Saved with the course “{name}”.', { name: course.title }))}</span></div>` : `<div class="stack tight"><span class="label">${esc(t('Linked sessions'))} ${linked.size ? `<span class="badge primary">${linked.size}</span>` : ''}</span>
               ${
                 list.length
                   ? `<div class="session-pick">${list
@@ -504,7 +546,7 @@ export function openScanner(opts = {}) {
                   : `<p class="small muted">${esc(t('No session waiting for an attestation.'))}</p>`
               }
               ${linked.size ? `<label class="flex small" style="cursor:pointer;margin-top:4px"><input type="checkbox" data-mark ${meta.markReceived ? 'checked' : ''} style="accent-color:var(--success);width:17px;height:17px">${esc(t('Mark the linked sessions as received (stops reminders)'))}</label>` : ''}
-            </div>
+            </div>`}
           </div>
         </div>`;
       footer.innerHTML = `${pdfFile ? `<button class="btn ghost" data-back="capture">${icon('arrowL', 'sm')}${esc(t('Change file'))}</button>` : `<button class="btn ghost" data-back="adjust">${icon('arrowL', 'sm')}${esc(t('Back'))}</button>`}
@@ -553,6 +595,7 @@ export function openScanner(opts = {}) {
       }
       if (meta.periodFrom && meta.periodTo && meta.periodTo < meta.periodFrom) return toast(t('The end of the period must be after its start.'), { type: 'error' });
       setBusy(btn, true);
+      let scanned = null;
       try {
         const fd = new FormData();
         let pageCount = 1;
@@ -561,8 +604,10 @@ export function openScanner(opts = {}) {
         } else {
           const JsPDF = await loadJsPdf();
           let pdf = null;
+          scanned = [];
           for (const pg of pages) {
             const c = renderPage(pg, 2000);
+            scanned.push(c);
             const landscape = c.width > c.height;
             const pw = landscape ? 297 : 210;
             const ph = landscape ? 210 : 297;
@@ -590,9 +635,12 @@ export function openScanner(opts = {}) {
         fd.append('notes', meta.notes);
         fd.append('pages', String(pageCount));
         fd.append('eventIds', JSON.stringify([...linked]));
+        if (course) fd.append('courseId', String(course.id));
         fd.append('markReceived', linked.size && meta.markReceived ? 'true' : 'false');
         saved = replacing ? await api.upload(`/api/documents/${replacing.id}`, fd, 'PUT') : await api.upload('/api/documents', fd);
         changed();
+        // Read the text in the background, so the document can be found by its content.
+        import('./ocr.js').then(({ readTextLater }) => readTextLater(scanned ? { id: saved.id, canvases: scanned } : saved, { quiet: !!course }));
         stopCamera();
         m.close(true);
         toast(linked.size && meta.markReceived ? t('Document saved. Attestation marked as received.') : t('Document saved'), { type: 'success' });
@@ -623,11 +671,17 @@ export function openScanner(opts = {}) {
     on(m.root, 'click', '[data-rot]', (e, b) => {
       const p = pages[active];
       p.rotation += Number(b.dataset.rot);
-      p.crop = { x: 0, y: 0, w: 1, h: 1 };
       drawAdjust();
     });
-    on(m.root, 'click', '[data-crop-reset]', () => {
-      pages[active].crop = { x: 0, y: 0, w: 1, h: 1 };
+    on(m.root, 'click', '[data-quad]', (e, b) => {
+      const p = pages[active];
+      if (b.dataset.quad === 'full') p.quad = FULL_QUAD.map((q) => ({ ...q }));
+      else {
+        const q = detectDocument(p.src);
+        if (!q) toast(t('The page could not be found automatically. Drag the corners onto it.'));
+        p.quad = q || FULL_QUAD.map((x) => ({ ...x }));
+        p.detected = !!q;
+      }
       drawAdjust();
     });
     on(m.root, 'click', '[data-filter]', (e, b) => {

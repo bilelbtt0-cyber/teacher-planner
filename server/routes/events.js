@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, transaction, getSettings } from '../db.js';
-import { normalizeRule, expand, httpError } from '../recurrence.js';
-import { isWallClock, addMinutes, diffMinutes, nowIn, datePart } from '../time.js';
-import { recomputeCategory, TEACHING_KINDS } from '../attestation.js';
-import { cancellingHolidays, holidayFor } from './holidays.js';
+import { httpError } from '../errors.js';
+import { isWallClock, addMinutes, diffMinutes, nowIn } from '../time.js';
+import { recomputeCategory } from '../attestation.js';
+import { courseBrief, KINDS } from './courses.js';
 
-export const KINDS = ['class', 'exam', 'meeting', 'personal', 'other'];
+export { KINDS };
 
 export function serializeEvent(row, extra = {}) {
   if (!row) return null;
@@ -17,10 +17,10 @@ export function serializeEvent(row, extra = {}) {
   }
   return {
     id: row.id,
-    seriesId: row.series_id,
     title: row.title,
     kind: row.kind,
     categoryId: row.category_id,
+    courseId: row.course_id ?? null,
     location: row.location,
     start: row.start,
     end: row.end,
@@ -72,6 +72,11 @@ async function cleanFields(body, { partial = false } = {}) {
     const id = body.categoryId ? parseInt(body.categoryId, 10) : null;
     if (id && !(await db.get('SELECT id FROM categories WHERE id = ?', id))) throw httpError(400, 'That institution no longer exists.');
     f.category_id = id || null;
+  }
+  if (!partial || body.courseId !== undefined) {
+    const id = body.courseId ? parseInt(body.courseId, 10) : null;
+    if (id && !(await db.get('SELECT id FROM courses WHERE id = ?', id))) throw httpError(400, 'That course no longer exists.');
+    f.course_id = id || null;
   }
   if (!partial || body.location !== undefined) f.location = String(body.location ?? '').trim().slice(0, 200);
   if (!partial || body.notes !== undefined) f.notes = String(body.notes ?? '').slice(0, 5000);
@@ -168,41 +173,15 @@ async function getRow(id) {
   return row;
 }
 
-/** An occurrence is "protected" when it holds history that must survive regenerating a series. */
-async function isProtected(row) {
-  if (row.attestation_status === 'received' || row.attestation_status === 'waived') return true;
-  return (await db.get('SELECT COUNT(*) AS n FROM document_events WHERE event_id = ?', row.id)).n > 0;
-}
-
-async function seriesTargets(row, scope) {
-  if (!row.series_id || scope === 'this') return [row];
-  if (scope === 'all') return db.all('SELECT * FROM events WHERE series_id = ? ORDER BY start', row.series_id);
-  return db.all('SELECT * FROM events WHERE series_id = ? AND start >= ? ORDER BY start', row.series_id, row.start);
-}
-
-/** Creates occurrences for `rule` starting at fields.start, skipping slots already taken by kept rows. */
-async function createSeries(fields, rule, keptStarts = new Set()) {
-  const duration = diffMinutes(fields.start, fields.end);
-  const starts = expand(fields.start, rule);
-  if (!starts.length) throw httpError(400, 'No session matches this repetition. Check the days and the end date.');
-  const seriesId = (await db.run('INSERT INTO series (rule) VALUES (?)', JSON.stringify(rule))).lastInsertRowid;
-  const holidays = TEACHING_KINDS.includes(fields.kind) ? await cancellingHolidays() : [];
-  const ids = [];
-  for (const start of starts) {
-    if (keptStarts.has(start)) continue;
-    const cols = { ...fields, series_id: seriesId, start, end: addMinutes(start, duration) };
-    // Classes that fall in a holiday are created already cancelled, and come back if the holiday is removed.
-    const holiday = holidayFor(holidays, start);
-    if (holiday) Object.assign(cols, { status: 'cancelled', cancel_reason: `holiday:${holiday.id}` });
-    ids.push(await insertRow(cols));
-  }
-  return { seriesId, ids };
-}
-
-async function seriesRule(seriesId) {
-  if (!seriesId) return null;
-  const s = await db.get('SELECT rule FROM series WHERE id = ?', seriesId);
-  return s ? JSON.parse(s.rule) : null;
+/** Sessions created by the old weekly timetable that are still to come and hold no history. */
+async function generatedFutureSessions(now) {
+  return db.all(
+    `SELECT e.id, e.category_id FROM events e
+     WHERE e.series_id IS NOT NULL AND e.start >= ?
+       AND COALESCE(e.attestation_status, '') NOT IN ('received', 'waived')
+       AND NOT EXISTS (SELECT 1 FROM document_events de WHERE de.event_id = e.id)`,
+    now
+  );
 }
 
 export async function loadEvent(id) {
@@ -212,10 +191,8 @@ export async function loadEvent(id) {
      FROM document_events de JOIN documents d ON d.id = de.document_id WHERE de.event_id = ? ORDER BY d.created_at DESC`,
     id
   );
-  const seriesCount = row.series_id ? (await db.get('SELECT COUNT(*) AS n FROM events WHERE series_id = ?', row.series_id)).n : 0;
   return serializeEvent(row, {
-    rule: await seriesRule(row.series_id),
-    seriesCount,
+    course: await courseBrief(row.course_id),
     documents: documents.map((d) => ({ ...d, has_thumb: !!d.has_thumb })),
   });
 }
@@ -239,135 +216,57 @@ eventsRouter.get('/', async (req, res) => {
   res.json(rows.map((r) => serializeEvent(r)));
 });
 
+// Sessions no longer repeat. These two let her remove, in one go, the upcoming sessions that the
+// old weekly timetable created in advance (past sessions and anything with an attestation or a
+// document are always kept).
+eventsRouter.get('/generated', async (req, res) => {
+  const now = nowIn((await getSettings()).timezone);
+  res.json({ upcoming: (await generatedFutureSessions(now)).length });
+});
+
+eventsRouter.post('/generated/clear', async (req, res) => {
+  const now = nowIn((await getSettings()).timezone);
+  const removed = await transaction(async () => {
+    const rows = await generatedFutureSessions(now);
+    await deleteEvents(rows.map((r) => r.id));
+    for (const c of new Set(rows.map((r) => r.category_id))) await recomputeCategory(c);
+    return rows.length;
+  });
+  res.json({ ok: true, removed });
+});
+
 eventsRouter.get('/:id', async (req, res) => {
   res.json(await loadEvent(parseInt(req.params.id, 10)));
 });
 
 eventsRouter.post('/', async (req, res) => {
   const fields = await cleanFields(req.body);
-  const rule = req.body.recurrence ? normalizeRule(req.body.recurrence) : null;
   const att = attestationColumns(fields._attestation, null);
   delete fields._attestation;
-  const base = { ...fields, ...att };
-  const result = await transaction(async () => {
-    const ids = rule ? (await createSeries(base, rule)).ids : [await insertRow(base)];
-    await recomputeCategory(base.category_id);
-    return ids;
+  const id = await transaction(async () => {
+    const newId = await insertRow({ ...fields, ...att });
+    await recomputeCategory(fields.category_id);
+    return newId;
   });
-  res.status(201).json({ ids: result, event: await loadEvent(result[0]), count: result.length });
+  res.status(201).json({ event: await loadEvent(id) });
 });
 
 eventsRouter.put('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const scope = ['this', 'following', 'all'].includes(req.body.scope) ? req.body.scope : 'this';
   const row = await getRow(id);
   const fields = await cleanFields(req.body);
   const att = fields._attestation;
   delete fields._attestation;
-  const hasRecurrenceKey = Object.prototype.hasOwnProperty.call(req.body, 'recurrence');
-  const newRule = req.body.recurrence ? normalizeRule(req.body.recurrence) : null;
-  const oldRule = await seriesRule(row.series_id);
-  const touchedCategories = new Set([row.category_id, fields.category_id]);
-  // Attestation settings only spread to other sessions when she actually changed them here,
-  // otherwise a single (or automatic) flag would be copied onto the whole series.
-  const rowRequired = !!row.attestation_required && row.attestation_status !== 'waived';
-  const attChanged = !!att && (att.required !== rowRequired || att.note !== row.attestation_note);
-  const attForOthers = attChanged ? att : undefined;
-
-  const affected = await transaction(async () => {
-    // Case 1: a single appointment that becomes repeating.
-    if (!row.series_id) {
-      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
-      if (newRule) {
-        const updated = await getRow(id);
-        const inherit = attChanged || row.attestation_source === 'manual' ? att : undefined;
-        const { seriesId } = await createSeries(
-          { ...fields, ...attestationColumns(inherit, null), status: 'scheduled' },
-          newRule,
-          new Set([updated.start])
-        );
-        await db.run('UPDATE events SET series_id = ? WHERE id = ?', seriesId, id);
-      }
-      return [id];
-    }
-
-    // Case 2: only this occurrence.
-    if (scope === 'this') {
-      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
-      return [id];
-    }
-
-    const ruleChanged = hasRecurrenceKey && JSON.stringify(newRule) !== JSON.stringify(oldRule);
-
-    // Case 3: the repetition itself changed: rebuild this and following sessions.
-    if (ruleChanged) {
-      const following = await db.all('SELECT * FROM events WHERE series_id = ? AND start >= ?', row.series_id, row.start);
-      const kept = new Set();
-      const others = following.filter((e) => e.id !== id);
-      const seriesWide = others.length > 0 && others.every((e) => e.attestation_required && e.attestation_source === 'manual');
-      const inherit = attChanged ? att : seriesWide ? { required: true, note: att?.note ?? row.attestation_note } : undefined;
-      const toDelete = [];
-      for (const e of others) {
-        touchedCategories.add(e.category_id);
-        if (await isProtected(e)) {
-          await db.run('UPDATE events SET series_id = NULL WHERE id = ?', e.id);
-          kept.add(e.start);
-        } else toDelete.push(e.id);
-      }
-      await deleteEvents(toDelete);
-      await updateRow(id, { ...fields, ...attestationColumns(att, row) });
-      if (oldRule) {
-        // Close the old series the day before this session, for the record.
-        const prevDay = new Date(datePart(row.start) + 'T00:00:00Z');
-        prevDay.setUTCDate(prevDay.getUTCDate() - 1);
-        const closed = { ...oldRule, until: prevDay.toISOString().slice(0, 10), count: null };
-        await db.run('UPDATE series SET rule = ? WHERE id = ?', JSON.stringify(closed), row.series_id);
-      }
-      if (newRule) {
-        const updated = await getRow(id);
-        kept.add(updated.start);
-        const { seriesId } = await createSeries({ ...fields, ...attestationColumns(inherit, null), status: 'scheduled' }, newRule, kept);
-        await db.run('UPDATE events SET series_id = ? WHERE id = ?', seriesId, id);
-      } else {
-        await db.run('UPDATE events SET series_id = NULL WHERE id = ?', id);
-      }
-      return [id];
-    }
-
-    // Case 4: same repetition, apply the changes to this & following (or all) sessions.
-    const targets = await seriesTargets(row, scope);
-    const shift = diffMinutes(row.start, fields.start);
-    const duration = diffMinutes(fields.start, fields.end);
-    const timeChanged = shift !== 0 || duration !== diffMinutes(row.start, row.end) || fields.all_day !== row.all_day;
-    for (const t of targets) {
-      touchedCategories.add(t.category_id);
-      const cols = { ...fields, ...attestationColumns(t.id === id ? att : attForOthers, t) };
-      if (t.id !== id) {
-        if (timeChanged) {
-          cols.start = addMinutes(t.start, shift);
-          cols.end = addMinutes(cols.start, duration);
-        } else {
-          delete cols.start;
-          delete cols.end;
-        }
-        delete cols.status; // cancelling one session should not cancel the others
-        delete cols.cancel_reason;
-      }
-      await updateRow(t.id, cols);
-    }
-    return targets.map((t) => t.id);
-  });
-
   await transaction(async () => {
-    for (const c of touchedCategories) await recomputeCategory(c);
+    await updateRow(id, { ...fields, ...attestationColumns(att, row) });
+    for (const c of new Set([row.category_id, fields.category_id])) await recomputeCategory(c);
   });
-  res.json({ event: await loadEvent(id), affected: affected.length });
+  res.json({ event: await loadEvent(id) });
 });
 
 /** Drag & drop / resize from the calendar. */
 eventsRouter.patch('/:id/move', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const scope = req.body.scope === 'following' ? 'following' : 'this';
   const row = await getRow(id);
   const allDay = req.body.allDay !== undefined ? !!req.body.allDay : !!row.all_day;
   let { start, end } = req.body;
@@ -379,46 +278,32 @@ eventsRouter.patch('/:id/move', async (req, res) => {
     end = isWallClock(start) ? addMinutes(start, row.all_day ? 60 : diffMinutes(row.start, row.end)) : null;
   }
   if (!isWallClock(start) || !isWallClock(end) || end <= start) throw httpError(400, 'That move is not valid.');
-  const shift = diffMinutes(row.start, start);
-  const duration = diffMinutes(start, end);
-  const targets = await seriesTargets(row, scope);
   await transaction(async () => {
-    for (const t of targets) {
-      const s = t.id === id ? start : addMinutes(t.start, shift);
-      await db.run(
-        `UPDATE events SET start = ?, end = ?, all_day = ?, attestation_last_nag_at = NULL, updated_at = datetime('now') WHERE id = ?`,
-        s,
-        addMinutes(s, duration),
-        allDay ? 1 : 0,
-        t.id
-      );
-    }
+    await db.run(
+      `UPDATE events SET start = ?, end = ?, all_day = ?, attestation_last_nag_at = NULL, updated_at = datetime('now') WHERE id = ?`,
+      start,
+      end,
+      allDay ? 1 : 0,
+      id
+    );
     await recomputeCategory(row.category_id);
   });
-  res.json({ event: await loadEvent(id), affected: targets.length });
+  res.json({ event: await loadEvent(id) });
 });
 
 eventsRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const scope = ['this', 'following', 'all'].includes(req.query.scope) ? req.query.scope : 'this';
   const mode = req.query.mode === 'cancel' ? 'cancel' : 'delete';
   const row = await getRow(id);
-  const targets = await seriesTargets(row, scope);
   await transaction(async () => {
     if (mode === 'cancel') {
-      for (const t of targets) {
-        await db.run(`UPDATE events SET status = 'cancelled', cancel_reason = NULL, updated_at = datetime('now') WHERE id = ?`, t.id);
-      }
+      await db.run(`UPDATE events SET status = 'cancelled', cancel_reason = NULL, updated_at = datetime('now') WHERE id = ?`, id);
     } else {
-      await deleteEvents(targets.map((t) => t.id));
-      if (row.series_id) {
-        const left = (await db.get('SELECT COUNT(*) AS n FROM events WHERE series_id = ?', row.series_id)).n;
-        if (!left) await db.run('DELETE FROM series WHERE id = ?', row.series_id);
-      }
+      await deleteEvents([id]);
     }
-    for (const c of new Set(targets.map((t) => t.category_id))) await recomputeCategory(c);
+    await recomputeCategory(row.category_id);
   });
-  res.json({ ok: true, affected: targets.length });
+  res.json({ ok: true });
 });
 
 /** Every attestation state change goes through here. */

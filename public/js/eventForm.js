@@ -1,9 +1,9 @@
 import { api } from './api.js';
 import {
   t, tn, fmtDayYear, fmtShort, fmtDate, fmtTime, timeRange, durationLabel, reminderLabel, nowWall, todayStr,
-  addMinutesWall, minutesBetween, addDaysStr, fmtWeekdayShort, fmtWeekdayLong, daysAgo, hoursLabel, wallToDate,
+  addMinutesWall, minutesBetween, addDaysStr, daysAgo, hoursLabel,
 } from './i18n.js';
-import { state, categoryById, activeCategories, eventColor, changed, loadCategories } from './store.js';
+import { state, categoryById, activeCategories, activeCourses, courseById, eventColor, changed, loadCategories, loadCourses } from './store.js';
 import { esc, icon, openModal, confirmDialog, chooseDialog, toast, errorToast, setBusy, on, el, CATEGORY_COLORS } from './ui.js';
 
 export const KINDS = [
@@ -31,88 +31,6 @@ function savePrefs(p) {
   } catch {
     /* ignore */
   }
-}
-
-/** End of the current school year (30 June), used as the default end of a repetition. */
-function schoolYearEnd(fromDate) {
-  const d = new Date(`${fromDate}T12:00`);
-  const year = d.getMonth() >= 6 ? d.getFullYear() + 1 : d.getFullYear();
-  return `${year}-06-30`;
-}
-
-// ---------- Client-side preview of a repetition (mirrors server/recurrence.js) ----------
-
-function expandPreview(start, rule) {
-  const toD = (w) => new Date(w + ':00Z');
-  const first = toD(start);
-  const limit = new Date(first.getTime() + 3 * 366 * 86400000);
-  const untilEnd = rule.until ? new Date(rule.until + 'T23:59:59Z') : limit;
-  const stop = untilEnd < limit ? untilEnd : limit;
-  const max = rule.count || 500;
-  let n = 0;
-  let last = null;
-  if (rule.freq === 'daily') {
-    for (let d = new Date(first); d <= stop && n < max; d.setUTCDate(d.getUTCDate() + rule.interval)) (n++, (last = new Date(d)));
-  } else if (rule.freq === 'weekly') {
-    const days = rule.byweekday.length ? rule.byweekday : [first.getUTCDay()];
-    const anchor = new Date(first);
-    anchor.setUTCDate(anchor.getUTCDate() - ((anchor.getUTCDay() + 6) % 7));
-    for (let d = new Date(first); d <= stop && n < max; d.setUTCDate(d.getUTCDate() + 1)) {
-      const wi = Math.floor((d - anchor) / (7 * 86400000));
-      if (wi % rule.interval === 0 && days.includes(d.getUTCDay())) (n++, (last = new Date(d)));
-    }
-  } else if (rule.freq === 'monthly') {
-    const day = first.getUTCDate();
-    for (let i = 0; n < max; i += rule.interval) {
-      const d = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + i, 1));
-      if (d > stop) break;
-      const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
-      if (day > lastDay) continue;
-      d.setUTCDate(day);
-      if (d > stop) break;
-      n++;
-      last = d;
-    }
-  }
-  return { count: n, last: last ? last.toISOString().slice(0, 10) : null };
-}
-
-function ruleSummary(rule) {
-  if (!rule) return '';
-  let s;
-  if (rule.freq === 'daily') s = rule.interval > 1 ? t('Every {n} days', { n: rule.interval }) : t('Every day');
-  else if (rule.freq === 'monthly') s = rule.interval > 1 ? t('Every {n} months', { n: rule.interval }) : t('Every month');
-  else {
-    const days = (rule.byweekday || []).slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((d) => fmtWeekdayLong(d));
-    s = (rule.interval > 1 ? t('Every {n} weeks', { n: rule.interval }) : t('Every week')) + (days.length ? ` · ${days.join(', ')}` : '');
-  }
-  if (rule.until) s += ` · ${t('until {date}', { date: fmtDate(rule.until) })}`;
-  else if (rule.count) s += ` · ${tn(rule.count, '{n} session', '{n} sessions')}`;
-  return s;
-}
-export { ruleSummary };
-
-// ---------- Scope question for repeating appointments ----------
-
-export function askScope(action, { allowAll = true } = {}) {
-  const verbs = {
-    edit: [t('Only this session'), t('This and following sessions'), t('All sessions of the series')],
-    move: [t('Only this session'), t('This and following sessions')],
-    delete: [t('Only this session'), t('This and following sessions'), t('All sessions of the series')],
-    cancel: [t('Only this session'), t('This and following sessions'), t('All sessions of the series')],
-  }[action];
-  const choices = [
-    { value: 'this', label: verbs[0], icon: 'calendar' },
-    { value: 'following', label: verbs[1], icon: 'arrowR' },
-  ];
-  if (allowAll && verbs[2]) choices.push({ value: 'all', label: verbs[2], icon: 'repeat' });
-  const titles = {
-    edit: t('Apply changes to…'),
-    move: t('Move which sessions?'),
-    delete: t('Delete which sessions?'),
-    cancel: t('Cancel which sessions?'),
-  };
-  return chooseDialog({ title: titles[action], message: t('This appointment is part of a repeating series.'), choices });
 }
 
 // ---------- Institutions ----------
@@ -225,8 +143,8 @@ export function openCategoryForm(existing = null) {
 // ---------- Event editor ----------
 
 /**
- * opts: { event } to edit, { start, end, allDay } to prefill a new one, { duplicateOf } to copy.
- * Resolves with the saved event, or null.
+ * opts: { event } to edit, { start, end, allDay } to prefill a new one, { duplicateOf } to copy,
+ * { course } to plan a session of a saved course. Resolves with the saved event, or null.
  */
 export function openEventForm(opts = {}) {
   return new Promise((resolve) => {
@@ -234,8 +152,10 @@ export function openEventForm(opts = {}) {
     const source = editing || opts.duplicateOf || null;
     const prefs = loadPrefs();
     const settings = state.settings;
+    const startCourse = !source && opts.course ? opts.course : null;
 
     // ----- initial values -----
+    const defaultDuration = startCourse?.durationMinutes || prefs.duration || 60;
     let start, end, allDay;
     if (source) {
       ({ start, end, allDay } = source);
@@ -243,11 +163,11 @@ export function openEventForm(opts = {}) {
       allDay = !!opts.allDay;
       if (opts.start) {
         start = opts.start;
-        end = opts.end || addMinutesWall(start, prefs.duration || 60);
+        end = opts.end || addMinutesWall(start, defaultDuration);
         // A click on a month cell gives a whole day: turn it into a timed slot at a sensible hour.
         if (!allDay && start.endsWith('T00:00') && (!opts.end || minutesBetween(start, opts.end) >= 1440)) {
           start = `${start.slice(0, 10)}T${prefs.lastTime || '08:00'}`;
-          end = addMinutesWall(start, prefs.duration || 60);
+          end = addMinutesWall(start, defaultDuration);
         }
       } else {
         const now = new Date();
@@ -255,14 +175,15 @@ export function openEventForm(opts = {}) {
         now.setHours(now.getHours() + 1);
         const pad = (n) => String(n).padStart(2, '0');
         start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`;
-        end = addMinutesWall(start, prefs.duration || 60);
+        end = addMinutesWall(start, defaultDuration);
       }
     }
     const v = {
-      title: source?.title || '',
-      kind: source?.kind || prefs.kind || 'class',
-      categoryId: source?.categoryId ?? (opts.categoryId || prefs.categoryId || null),
-      location: source?.location || '',
+      courseId: source?.courseId ?? startCourse?.id ?? null,
+      title: source?.title || startCourse?.title || '',
+      kind: source?.kind || startCourse?.kind || prefs.kind || 'class',
+      categoryId: source?.categoryId ?? startCourse?.categoryId ?? (opts.categoryId || prefs.categoryId || null),
+      location: source?.location || startCourse?.location || '',
       notes: source?.notes || '',
       date: start.slice(0, 10),
       endDate: allDay ? addDaysStr(end.slice(0, 10), -1) : end.slice(0, 10),
@@ -272,12 +193,14 @@ export function openEventForm(opts = {}) {
       reminders: structuredClone(source?.reminders || settings.defaultReminders || []),
       attRequired: source ? !!source.attestation?.required && source.attestation?.status !== 'waived' : false,
       attNote: source?.attestation?.note || '',
-      rule: editing ? editing.rule || null : null,
+      saveAsCourse: false,
     };
     if (v.categoryId && !categoryById(v.categoryId)) v.categoryId = null;
+    if (v.courseId && !courseById(v.courseId)) v.courseId = null;
+    // A long course planned late in the evening must still end on the same day.
+    if (!allDay && end.slice(0, 10) !== v.date) v.endTime = '23:59';
     const wasAuto = editing?.attestation?.source === 'auto';
     const attLocked = editing && ['received'].includes(editing.attestation?.status);
-    const isSeries = !!editing?.seriesId;
 
     const titleText = editing ? t('Edit appointment') : opts.duplicateOf ? t('Duplicate appointment') : t('New appointment');
     let dirty = false;
@@ -287,8 +210,7 @@ export function openEventForm(opts = {}) {
       title: titleText,
       size: 'lg',
       content: `<form class="stack" novalidate autocomplete="off"></form>`,
-      footer: `${isSeries ? `<span class="chip primary">${icon('repeat')}${esc(t('Repeating'))}</span>` : ''}
-        <span class="spacer"></span>
+      footer: `<span class="spacer"></span>
         <button class="btn" data-close>${esc(t('Cancel'))}</button>
         <button class="btn primary" data-save>${icon('check')}${esc(editing ? t('Save changes') : t('Create'))}</button>`,
       onClose: async () => {
@@ -316,57 +238,30 @@ export function openEventForm(opts = {}) {
         <option value="__new">＋ ${esc(t('New institution…'))}</option>`;
     }
 
-    function recurrenceHtml() {
-      const r = v.rule;
-      const freq = r?.freq || '';
-      const startDay = new Date(`${v.date}T12:00`).getDay();
-      const days = r?.byweekday?.length ? r.byweekday : [startDay];
-      const order = settings.weekStart === 0 ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 0];
-      const endsCount = !!r?.count && !r?.until;
-      return `
-        <div class="field">
-          <label for="f-freq">${icon('repeat', 'sm')} ${esc(t('Repeat'))}</label>
-          <select class="select" id="f-freq" name="freq">
-            <option value="" ${!freq ? 'selected' : ''}>${esc(t('Does not repeat'))}</option>
-            <option value="weekly" ${freq === 'weekly' ? 'selected' : ''}>${esc(t('Weekly'))}</option>
-            <option value="daily" ${freq === 'daily' ? 'selected' : ''}>${esc(t('Daily'))}</option>
-            <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>${esc(t('Monthly'))}</option>
-          </select>
+    function courseHtml() {
+      const courses = activeCourses();
+      const current = courseById(v.courseId);
+      const options = `<option value="">${esc(t('— Without a course —'))}</option>${courses
+        .map((c) => `<option value="${c.id}" ${c.id === v.courseId ? 'selected' : ''}>${esc(c.title)}${categoryById(c.categoryId) ? ` · ${esc(categoryById(c.categoryId).name)}` : ''}</option>`)
+        .join('')}
+        ${current?.archived ? `<option value="${current.id}" selected>${esc(current.title)}</option>` : ''}
+        <option value="__new">＋ ${esc(t('New course…'))}</option>`;
+      const canSave = !v.courseId && !editing && ['class', 'exam'].includes(v.kind);
+      return `<div class="course-pick ${v.courseId ? 'on' : ''}">
+          <span class="ic">${icon('book')}</span>
+          <div class="field" style="flex:1">
+            <label for="f-course">${esc(t('Course'))}</label>
+            <select class="select" id="f-course" name="courseId">${options}</select>
+            <span class="hint">${esc(
+              v.courseId
+                ? t('Its summary and files will be one click away during the session.')
+                : courses.length
+                  ? t('Pick a saved course to fill in this form automatically.')
+                  : t('Save your courses in My courses, then pick one here to fill in this form automatically.')
+            )}</span>
+          </div>
         </div>
-        ${
-          freq
-            ? `<div class="recur-box">
-            <div class="row" style="align-items:center">
-              <span class="label" style="flex:none">${esc(t('Every'))}</span>
-              <input class="input" name="interval" type="number" min="1" max="52" value="${r.interval || 1}" style="width:76px;flex:none">
-              <span class="muted" style="flex:none">${esc(freq === 'weekly' ? t('week(s)') : freq === 'daily' ? t('day(s)') : t('month(s)'))}</span>
-            </div>
-            ${
-              freq === 'weekly'
-                ? `<div class="field"><span class="label">${esc(t('On'))}</span><div class="pills">${order
-                    .map(
-                      (d) =>
-                        `<button type="button" class="pill day-pill ${days.includes(d) ? 'active' : ''}" data-day="${d}" title="${esc(fmtWeekdayLong(d))}">${esc(fmtWeekdayShort(d).slice(0, 2))}</button>`
-                    )
-                    .join('')}</div></div>`
-                : ''
-            }
-            <div class="field"><span class="label">${esc(t('Ends'))}</span>
-              <div class="row" style="align-items:center;flex-wrap:wrap">
-                <div class="segmented" style="flex:none">
-                  <button type="button" data-ends="until" class="${!endsCount ? 'active' : ''}">${esc(t('On a date'))}</button>
-                  <button type="button" data-ends="count" class="${endsCount ? 'active' : ''}">${esc(t('After'))}</button>
-                </div>
-                ${
-                  endsCount
-                    ? `<input class="input" name="count" type="number" min="1" max="500" value="${r.count || 10}" style="width:90px;flex:none"><span class="muted" style="flex:none">${esc(t('sessions'))}</span>`
-                    : `<input class="input" name="until" type="date" value="${r.until || schoolYearEnd(v.date)}" min="${v.date}" style="max-width:190px">`
-                }
-              </div></div>
-            <div class="recur-summary" data-recur-summary></div>
-          </div>`
-            : ''
-        }`;
+        ${canSave ? `<label class="switch small"><input type="checkbox" name="saveAsCourse" ${v.saveAsCourse ? 'checked' : ''}><span class="track"></span>${esc(t('Also save it in My courses, to plan it again in two clicks'))}</label>` : ''}`;
     }
 
     function attestationHtml() {
@@ -433,7 +328,9 @@ export function openEventForm(opts = {}) {
     function render() {
       const dur = v.allDay ? 0 : minutesBetween(`${v.date}T${v.startTime}`, `${v.date}T${v.endTime}`);
       form.innerHTML = `
-        <input class="input title-input" name="title" value="${esc(v.title)}" placeholder="${esc(t('Title, e.g. Math — 3rd year A'))}" maxlength="200" autofocus required>
+        ${courseHtml()}
+
+        <input class="input title-input" name="title" value="${esc(v.title)}" placeholder="${esc(t('Title, e.g. Math — 3rd year A'))}" maxlength="200" ${v.courseId ? '' : 'autofocus'} required>
         <div class="field-error-title error-text" hidden></div>
 
         <div class="segmented" role="radiogroup" aria-label="${esc(t('Type'))}">
@@ -459,7 +356,7 @@ export function openEventForm(opts = {}) {
                 <div class="field"><label>${esc(t('To'))}</label><input class="input" type="date" name="endDate" value="${v.endDate}" min="${v.date}" required></div>
               </div>`
               : `<div class="grid-3">
-                <div class="field"><label>${esc(t('Date'))}</label><input class="input" type="date" name="date" value="${v.date}" required></div>
+                <div class="field"><label>${esc(t('Date'))}</label><input class="input" type="date" name="date" value="${v.date}" required ${v.courseId && !editing ? 'autofocus' : ''}></div>
                 <div class="field"><label>${esc(t('Start'))}</label><input class="input" type="time" name="startTime" value="${v.startTime}" step="60" required></div>
                 <div class="field"><label>${esc(t('End'))}</label><input class="input" type="time" name="endTime" value="${v.endTime}" step="60" required></div>
               </div>
@@ -473,28 +370,28 @@ export function openEventForm(opts = {}) {
           ${v.date < todayStr() && !editing ? `<div class="tip warning">${icon('info')}<span>${esc(t('This date is in the past. That is fine for keeping your history complete.'))}</span></div>` : ''}
         </div>
 
-        <div class="form-section stack tight">${recurrenceHtml()}</div>
-
         <div class="form-section">${attestationHtml()}</div>
 
         <div class="form-section">${remindersHtml()}</div>
 
         <div class="form-section field">
           <label for="f-notes">${esc(t('Notes'))}</label>
-          <textarea class="textarea" id="f-notes" name="notes" rows="3" placeholder="${esc(t('Anything useful: topic, material, contact…'))}" maxlength="5000">${esc(v.notes)}</textarea>
+          <textarea class="textarea" id="f-notes" name="notes" rows="3" placeholder="${esc(t('Anything useful for this session: homework given, what to bring…'))}" maxlength="5000">${esc(v.notes)}</textarea>
         </div>`;
-      updateRecurSummary();
     }
 
-    function updateRecurSummary() {
-      const box = form.querySelector('[data-recur-summary]');
-      if (!box || !v.rule) return;
-      const startWall = `${v.date}T${v.allDay ? '00:00' : v.startTime}`;
-      const { count, last } = expandPreview(startWall, v.rule);
-      box.classList.toggle('warn', count === 0);
-      box.innerHTML = count
-        ? `${icon('calendar', 'sm')} ${esc(tn(count, '{n} session will be created', '{n} sessions will be created'))}${last ? ` · ${esc(t('last on {date}', { date: fmtDate(last) }))}` : ''}`
-        : `${icon('alert', 'sm')} ${esc(t('No session matches. Check the days and the end date.'))}`;
+    /** Picking a course fills in everything it knows; the date and the start time stay as chosen. */
+    function applyCourse(c) {
+      v.courseId = c.id;
+      v.title = c.title;
+      v.kind = c.kind;
+      if (c.categoryId && categoryById(c.categoryId)) v.categoryId = c.categoryId;
+      v.location = c.location;
+      if (!v.allDay) {
+        const endW = addMinutesWall(`${v.date}T${v.startTime}`, c.durationMinutes);
+        v.endTime = endW.slice(0, 10) === v.date ? endW.slice(11, 16) : '23:59';
+      }
+      v.saveAsCourse = false;
     }
 
     function readInputs() {
@@ -509,11 +406,7 @@ export function openEventForm(opts = {}) {
         v.endTime = f.endTime.value || v.endTime;
       }
       if (f.attNote) v.attNote = f.attNote.value;
-      if (v.rule) {
-        if (f.interval) v.rule.interval = Math.max(1, parseInt(f.interval.value, 10) || 1);
-        if (f.until) v.rule.until = f.until.value || null;
-        if (f.count) v.rule.count = Math.max(1, parseInt(f.count.value, 10) || 1);
-      }
+      if (f.saveAsCourse) v.saveAsCourse = f.saveAsCourse.checked;
     }
 
     // ----- interactions -----
@@ -529,7 +422,6 @@ export function openEventForm(opts = {}) {
         }
         form.querySelectorAll('[data-dur]').forEach((b) => b.classList.toggle('active', Number(b.dataset.dur) === dur));
       }
-      if (['interval', 'until', 'count', 'date', 'startTime'].includes(e.target.name)) updateRecurSummary();
       if (e.target.name === 'title') form.querySelector('.field-error-title').hidden = true;
     });
 
@@ -548,7 +440,6 @@ export function openEventForm(opts = {}) {
         readAndRender();
       } else if (n === 'date') {
         if (v.allDay && v.endDate < v.date) v.endDate = v.date;
-        if (v.rule?.freq === 'weekly' && v.rule.byweekday.length <= 1) v.rule.byweekday = [new Date(`${v.date}T12:00`).getDay()];
         readAndRender();
       } else if (n === 'allDay') {
         v.allDay = e.target.checked;
@@ -560,18 +451,22 @@ export function openEventForm(opts = {}) {
           v.categoryId = cat ? cat.id : v.categoryId;
         } else v.categoryId = e.target.value ? Number(e.target.value) : null;
         readAndRender();
-      } else if (n === 'freq') {
-        const freq = e.target.value;
-        v.rule = freq
-          ? {
-              freq,
-              interval: 1,
-              byweekday: freq === 'weekly' ? [new Date(`${v.date}T12:00`).getDay()] : [],
-              until: v.rule?.until || schoolYearEnd(v.date),
-              count: null,
-            }
-          : null;
-        readAndRender();
+      } else if (n === 'courseId') {
+        readInputs();
+        if (e.target.value === '__new') {
+          const { openCourseForm } = await import('./courses.js');
+          const course = await openCourseForm(null, {
+            title: v.title.trim(),
+            kind: v.kind,
+            categoryId: v.categoryId,
+            location: v.location,
+            durationMinutes: v.allDay ? 60 : Math.max(5, minutesBetween(`${v.date}T${v.startTime}`, `${v.date}T${v.endTime}`) || 60),
+          });
+          if (course) applyCourse(course);
+        } else if (e.target.value) applyCourse(courseById(Number(e.target.value)));
+        else v.courseId = null;
+        lastStartTime = v.startTime;
+        render();
       } else if (n === 'attRequired') {
         v.attRequired = e.target.checked;
         readAndRender();
@@ -601,25 +496,6 @@ export function openEventForm(opts = {}) {
       const end = addMinutesWall(`${v.date}T${v.startTime}`, Number(b.dataset.dur));
       if (end.slice(0, 10) !== v.date) return toast(t('That duration would go past midnight.'), { type: 'error' });
       v.endTime = end.slice(11, 16);
-      dirty = true;
-      readAndRender(false);
-    });
-    on(form, 'click', '[data-day]', (e, b) => {
-      readInputs();
-      const d = Number(b.dataset.day);
-      const set = new Set(v.rule.byweekday);
-      if (set.has(d)) {
-        if (set.size === 1) return toast(t('Keep at least one day.'));
-        set.delete(d);
-      } else set.add(d);
-      v.rule.byweekday = [...set];
-      dirty = true;
-      readAndRender(false);
-    });
-    on(form, 'click', '[data-ends]', (e, b) => {
-      readInputs();
-      if (b.dataset.ends === 'count') v.rule = { ...v.rule, count: v.rule.count || 10, until: null };
-      else v.rule = { ...v.rule, until: schoolYearEnd(v.date), count: null };
       dirty = true;
       readAndRender(false);
     });
@@ -664,45 +540,36 @@ export function openEventForm(opts = {}) {
           return toast(t('The end time must be after the start time.'), { type: 'error' });
         }
       }
-      if (v.rule && expandPreview(startW, v.rule).count === 0) {
-        return toast(t('No session matches this repetition. Check the days and the end date.'), { type: 'error' });
-      }
-      const payload = {
-        title: v.title.trim(),
-        kind: v.kind,
-        categoryId: v.categoryId,
-        location: v.location,
-        notes: v.notes,
-        start: startW,
-        end: endW,
-        allDay: v.allDay,
-        reminders: v.reminders,
-        attestation: { required: v.attRequired, note: v.attNote },
-        recurrence: v.rule,
-      };
-
-      let scope = 'this';
-      if (isSeries) {
-        const ruleChanged = JSON.stringify(normalizeForCompare(v.rule)) !== JSON.stringify(normalizeForCompare(editing.rule));
-        if (ruleChanged) {
-          const ok = await confirmDialog({
-            title: t('Change the repetition?'),
-            message: t('The new repetition will apply to this session and the following ones. Past sessions and those with a received attestation are kept.'),
-            confirm: t('Apply'),
-          });
-          if (!ok) return;
-          scope = 'following';
-        } else {
-          scope = await askScope('edit');
-          if (!scope) return;
-        }
-      }
-      if (editing && !isSeries && !v.rule) delete payload.recurrence;
       setBusy(btn, true);
       try {
-        let result;
-        if (editing) result = await api.put(`/api/events/${editing.id}`, { ...payload, scope });
-        else result = await api.post('/api/events', payload);
+        let newCourse = false;
+        if (!v.courseId && v.saveAsCourse && !editing) {
+          const course = await api.post('/api/courses', {
+            title: v.title.trim(),
+            kind: v.kind,
+            categoryId: v.categoryId,
+            location: v.location,
+            durationMinutes: v.allDay ? 60 : minutesBetween(startW, endW),
+          });
+          v.courseId = course.id;
+          v.saveAsCourse = false;
+          newCourse = true;
+          await loadCourses();
+        }
+        const payload = {
+          courseId: v.courseId,
+          title: v.title.trim(),
+          kind: v.kind,
+          categoryId: v.categoryId,
+          location: v.location,
+          notes: v.notes,
+          start: startW,
+          end: endW,
+          allDay: v.allDay,
+          reminders: v.reminders,
+          attestation: { required: v.attRequired, note: v.attNote },
+        };
+        const result = editing ? await api.put(`/api/events/${editing.id}`, payload) : await api.post('/api/events', payload);
         savePrefs({
           kind: v.kind,
           categoryId: v.categoryId,
@@ -712,9 +579,9 @@ export function openEventForm(opts = {}) {
         saved = result.event;
         changed();
         m.close(true);
-        if (editing) toast(result.affected > 1 ? tn(result.affected, '{n} session updated', '{n} sessions updated') : t('Changes saved'), { type: 'success' });
+        if (editing) toast(t('Changes saved'), { type: 'success' });
         else
-          toast(result.count > 1 ? tn(result.count, '{n} session created', '{n} sessions created') : t('Appointment created'), {
+          toast(newCourse ? t('Appointment created and course saved in My courses') : t('Appointment created'), {
             type: 'success',
             action: t('View'),
             onAction: () => openEventDetails(result.event.id),
@@ -735,17 +602,6 @@ export function openEventForm(opts = {}) {
     });
     render();
   });
-}
-
-function normalizeForCompare(r) {
-  if (!r) return null;
-  return {
-    freq: r.freq,
-    interval: Number(r.interval) || 1,
-    byweekday: r.freq === 'weekly' ? [...(r.byweekday || [])].map(Number).sort() : [],
-    until: r.until || null,
-    count: r.until ? null : r.count ? Number(r.count) : null,
-  };
 }
 
 // ---------- Attestation actions (shared by drawer, today and attestations pages) ----------
@@ -958,6 +814,17 @@ function renderDrawer(e) {
       ${e.attestation.source !== 'auto' ? `<button class="btn ghost sm" data-att="remove">${esc(t('Remove'))}</button>` : ''}</div></div>`;
   }
 
+  const c = e.course;
+  const snippet = c ? c.summary.trim().replace(/\s+/g, ' ') : '';
+  const supportBox = c
+    ? `<div class="support-box">
+        <div class="head">${icon('book')}<span class="ellipsis">${esc(c.title)}</span></div>
+        ${snippet ? `<div class="desc">${esc(snippet.length > 220 ? `${snippet.slice(0, 220)}…` : snippet)}</div>` : `<div class="desc muted">${esc(t('No summary yet'))}</div>`}
+        ${c.files.length ? `<div class="desc small">${icon('folder', 'sm')} ${esc(tn(c.files.length, '{n} file', '{n} files'))}</div>` : ''}
+        <div class="actions"><button class="btn primary sm" data-support="${c.id}">${icon('book', 'sm')}${esc(t('Open the support'))}</button></div>
+      </div>`
+    : '';
+
   node.innerHTML = `
     <div class="drawer-head">
       <span class="color" style="background:${eventColor(e)}"></span>
@@ -975,12 +842,12 @@ function renderDrawer(e) {
       <div class="stack tight">
         <div class="detail-row">${icon('calendar')}<div><div class="strong cap" style="color:var(--text)">${esc(fmtDayYear(e.start))}</div>
           <div>${esc(timeRange(e))}${hours ? ` · ${esc(hoursLabel(hours))}` : ''}</div></div></div>
-        ${e.rule ? `<div class="detail-row">${icon('repeat')}<div>${esc(ruleSummary(e.rule))}<div class="small muted">${esc(tn(e.seriesCount, '{n} session in this series', '{n} sessions in this series'))}</div></div></div>` : ''}
         ${cat ? `<div class="detail-row">${icon('building')}<div class="flex gap-sm"><span class="cat-dot" style="background:${cat.color}"></span>${esc(cat.name)}</div></div>` : ''}
         ${e.location ? `<div class="detail-row">${icon('pin')}<div>${esc(e.location)}</div></div>` : ''}
         ${e.reminders.length ? `<div class="detail-row">${icon('bell')}<div>${e.reminders.map((r) => `${esc(reminderLabel(r.minutes))}${r.email ? ` ${icon('mail', 'sm')}` : ''}`).join('<br>')}</div></div>` : ''}
         ${e.notes ? `<div class="detail-row">${icon('fileText')}<div class="notes">${esc(e.notes)}</div></div>` : ''}
       </div>
+      ${supportBox}
       ${e.status !== 'cancelled' ? attBox : ''}
       ${
         e.documents.length
@@ -1007,6 +874,10 @@ function renderDrawer(e) {
     </div>`;
 
   node.querySelector('[data-close]').addEventListener('click', closeDrawer);
+  node.querySelector('[data-support]')?.addEventListener('click', async () => {
+    const { openCourseSupport } = await import('./courses.js');
+    openCourseSupport(e.course.id);
+  });
   node.querySelectorAll('[data-att]').forEach((b) =>
     b.addEventListener('click', async () => {
       const act = b.dataset.att;
@@ -1049,18 +920,13 @@ function renderDrawer(e) {
         closeDrawer();
         openEventForm({ duplicateOf: e });
       } else if (act === 'cancel') {
-        let scope = 'this';
-        if (e.seriesId) {
-          scope = await askScope('cancel');
-          if (!scope) return;
-        }
         try {
-          const res = await api.del(`/api/events/${e.id}?mode=cancel&scope=${scope}`);
+          await api.del(`/api/events/${e.id}?mode=cancel`);
           changed();
-          toast(res.affected > 1 ? tn(res.affected, '{n} session cancelled', '{n} sessions cancelled') : t('Session cancelled. It stays in your history.'), {
-            action: res.affected === 1 ? t('Undo') : undefined,
+          toast(t('Session cancelled. It stays in your history.'), {
+            action: t('Undo'),
             onAction: async () => {
-              await api.put(`/api/events/${e.id}`, { ...editablePayload(e), status: 'scheduled', scope: 'this' });
+              await api.put(`/api/events/${e.id}`, { ...editablePayload(e), status: 'scheduled' });
               changed();
             },
           });
@@ -1070,7 +936,7 @@ function renderDrawer(e) {
         }
       } else if (act === 'restore') {
         try {
-          await api.put(`/api/events/${e.id}`, { ...editablePayload(e), status: 'scheduled', scope: 'this' });
+          await api.put(`/api/events/${e.id}`, { ...editablePayload(e), status: 'scheduled' });
           changed();
           toast(t('Session restored'), { type: 'success' });
           reloadDrawer();
@@ -1078,11 +944,6 @@ function renderDrawer(e) {
           errorToast(err);
         }
       } else if (act === 'delete') {
-        let scope = 'this';
-        if (e.seriesId) {
-          scope = await askScope('delete');
-          if (!scope) return;
-        }
         const hasHistory = e.attestation.status === 'received' || e.documents.length;
         const ok = await confirmDialog({
           title: t('Delete permanently?'),
@@ -1095,10 +956,10 @@ function renderDrawer(e) {
         });
         if (!ok) return;
         try {
-          const res = await api.del(`/api/events/${e.id}?mode=delete&scope=${scope}`);
+          await api.del(`/api/events/${e.id}?mode=delete`);
           closeDrawer();
           changed();
-          toast(tn(res.affected, '{n} session deleted', '{n} sessions deleted'));
+          toast(t('Appointment deleted'));
         } catch (err) {
           errorToast(err);
         }
@@ -1109,6 +970,7 @@ function renderDrawer(e) {
 
 function editablePayload(e) {
   return {
+    courseId: e.courseId,
     title: e.title,
     kind: e.kind,
     categoryId: e.categoryId,

@@ -57,6 +57,7 @@ export async function render(root, params) {
       <div class="doc-info"><div class="title" title="${esc(d.title)}">${esc(d.title)}</div>
         <div class="meta">${d.categoryColor ? `<span class="cat-dot" style="background:${d.categoryColor}"></span>` : ''}
           <span class="ellipsis">${esc(d.docDate ? fmtDate(d.docDate) : fmtDate(d.createdAt.slice(0, 10)))}${d.categoryName ? ` · ${esc(d.categoryName)}` : ''}</span></div>
+        ${d.courseTitle ? `<div class="meta">${icon('book', 'sm')} <span class="ellipsis">${esc(d.courseTitle)}</span></div>` : ''}
         ${d.events.length || d.hours ? `<div class="meta">${d.events.length ? `${icon('link', 'sm')} ${esc(tn(d.events.length, '{n} session', '{n} sessions'))}` : ''}${d.hours ? ` · ${esc(hoursLabel(d.hours))}` : ''}</div>` : ''}
       </div></div>`;
   }
@@ -176,7 +177,13 @@ export async function openDocument(id) {
     title: d.title,
     size: 'xl',
     content: `<div class="doc-detail">
-        <div>${isPdf ? `<iframe class="preview-frame" src="${fileUrl}" title="${esc(d.title)}"></iframe>` : `<img class="preview-img" src="${fileUrl}" alt="${esc(d.title)}">`}</div>
+        <div>${
+          isPdf
+            ? `<iframe class="preview-frame" src="${fileUrl}" title="${esc(d.title)}"></iframe>`
+            : d.mime.startsWith('image/')
+              ? `<img class="preview-img" src="${fileUrl}" alt="${esc(d.title)}">`
+              : `<div class="empty">${icon('fileText', 'xl')}<p>${esc(t('This file opens in its own application (Word, PowerPoint…).'))}</p></div>`
+        }</div>
         <form class="stack" novalidate>
           <div class="field"><label>${esc(t('Name'))}</label><input class="input" name="title" value="${esc(d.title)}" maxlength="200"></div>
           <div class="grid-2">
@@ -192,6 +199,7 @@ export async function openDocument(id) {
           </div>
           <div class="field"><label>${esc(t('Tags'))}</label><input class="input" name="tags" value="${esc(d.tags.join(', '))}"></div>
           <div class="field"><label>${esc(t('Notes'))}</label><textarea class="textarea" name="notes" rows="2">${esc(d.notes)}</textarea></div>
+          <div data-ocr></div>
           ${
             d.events.length
               ? `<div class="stack tight"><span class="label">${esc(t('Linked sessions'))}</span>${d.events
@@ -204,7 +212,8 @@ export async function openDocument(id) {
                   .join('')}</div>`
               : ''
           }
-          <p class="small muted">${esc(isPdf ? 'PDF' : d.mime.replace('image/', '').toUpperCase())} · ${esc(fileSize(d.size))} · ${esc(t('added {d}', { d: fmtDate(d.createdAt.slice(0, 10)) }))}</p>
+          ${d.courseTitle ? `<div class="tip">${icon('book')}<span>${esc(t('File of the course “{name}”.', { name: d.courseTitle }))} <a href="#/courses" data-close>${esc(t('My courses'))}</a></span></div>` : ''}
+          <p class="small muted">${esc(isPdf ? 'PDF' : d.mime.startsWith('image/') ? d.mime.replace('image/', '').toUpperCase() : (d.originalName.split('.').pop() || '').toUpperCase())} · ${esc(fileSize(d.size))} · ${esc(t('added {d}', { d: fmtDate(d.createdAt.slice(0, 10)) }))}</p>
         </form>
       </div>`,
     footer: `<button class="btn ghost" data-delete style="color:var(--danger-text)">${icon('trash', 'sm')}${esc(t('Delete'))}</button>
@@ -220,6 +229,51 @@ export async function openDocument(id) {
   });
   const form = m.root.querySelector('form');
   const saveBtn = m.root.querySelector('[data-save]');
+  const { canReadText, extractText, saveText } = await import('../ocr.js');
+  let ocrText = d.ocrText || '';
+  function drawOcr() {
+    const box = m.root.querySelector('[data-ocr]');
+    if (ocrText) {
+      box.innerHTML = `<details class="ocr-box"><summary>${icon('fileText', 'sm')} ${esc(t('Text of the document'))}</summary>
+        <div class="ocr-text">${esc(ocrText)}</div>
+        <div class="flex wrap"><button type="button" class="btn sm" data-copy-text>${icon('copy', 'sm')}${esc(t('Copy the text'))}</button>
+        <span class="small muted">${esc(t('Read automatically: there may be a few mistakes.'))}</span></div></details>`;
+    } else if (canReadText(d.mime)) {
+      box.innerHTML = `<div class="flex wrap"><button type="button" class="btn sm" data-read-text>${icon('fileText', 'sm')}${esc(t('Read the text of the document'))}</button>
+        <span class="small muted">${esc(t('So you can find it by the words it contains.'))}</span></div>`;
+    } else box.innerHTML = '';
+  }
+  drawOcr();
+  on(form, 'click', '[data-copy-text]', async () => {
+    try {
+      await navigator.clipboard.writeText(ocrText);
+      toast(t('Text copied'), { type: 'success' });
+    } catch {
+      toast(t('Copying is not allowed by this browser.'), { type: 'error' });
+    }
+  });
+  on(form, 'click', '[data-read-text]', async (e, b) => {
+    setBusy(b, true);
+    b.insertAdjacentHTML('afterend', `<span class="small muted" data-reading>${esc(t('Reading… this can take a little while.'))}</span>`);
+    try {
+      const text = await extractText(d);
+      if (!text.trim()) {
+        toast(t('No text was found in this document.'));
+        setBusy(b, false);
+        form.querySelector('[data-reading]')?.remove();
+        return;
+      }
+      await saveText(d.id, text);
+      ocrText = text;
+      changed();
+      drawOcr();
+      toast(t('Text read: you can now find this document by the words it contains.'), { type: 'success' });
+    } catch (err) {
+      setBusy(b, false);
+      form.querySelector('[data-reading]')?.remove();
+      errorToast(err);
+    }
+  });
   form.addEventListener('input', () => {
     dirty = true;
     saveBtn.disabled = false;

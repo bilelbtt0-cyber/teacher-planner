@@ -1,13 +1,38 @@
 import { api } from '../api.js';
-import { t, tn, fmtDayYear, fmtTime, relativeDay, timeRange, hoursLabel, daysAgo, nowWall, fmtShort } from '../i18n.js';
+import { t, tn, fmtDayYear, fmtTime, relativeDay, timeRange, hoursLabel, daysAgo, nowWall, fmtShort, getLanguage } from '../i18n.js';
+import { composeDayNote, rememberDayNote } from '../dayNote.js';
 import { state, subscribe, categoryById, eventColor } from '../store.js';
 import { esc, icon, on, emptyState, toast } from '../ui.js';
 import { openEventDetails, openEventForm, markReceivedFlow, attestationAction, attestationChip, kindLabel } from '../eventForm.js';
 
 const TIP_KEY = 'planner.hideEmailTip';
+const NOTE_FOLD_KEY = 'planner.dayNoteFolded';
+
+const NOTE_LOOK = {
+  morning: { label: 'A word for your morning', icon: 'sun' },
+  free: { label: 'A word for your day', icon: 'sun' },
+  day: { label: 'Where your day stands', icon: 'clock' },
+  evening: { label: 'A word for your evening', icon: 'moon' },
+};
+
+function noteHtml(note, folded) {
+  const look = NOTE_LOOK[note.phase];
+  if (folded) {
+    return `<button class="day-note-folded" data-dn-unfold>${icon(look.icon, 'sm')}<span>${esc(t(look.label))}</span>${icon('chevronD', 'sm')}</button>`;
+  }
+  const fr = getLanguage() === 'fr';
+  return `<section class="day-note phase-${note.phase}">
+      <div class="dn-head"><span class="dn-ic">${icon(look.icon)}</span><span class="dn-label">${esc(t(look.label))}</span></div>
+      <p class="dn-body">${esc(note.body)}</p>
+      ${note.closing ? `<p class="dn-closing">${esc(note.closing)}</p>` : ''}
+      ${note.quote ? `<blockquote class="dn-quote">${fr ? '« ' : '“'}${esc(note.quote.text)}${fr ? ' »' : '”'}<cite>${esc(note.quote.author)}</cite></blockquote>` : ''}
+      <div class="dn-foot"><button class="btn ghost sm" data-dn-fold>${esc(t('Thank you'))} ${icon('check', 'sm')}</button></div>
+    </section>`;
+}
 
 export async function render(root) {
   let data = null;
+  let lastNote = null;
 
   async function load() {
     try {
@@ -37,6 +62,7 @@ export async function render(root) {
           ${e.status === 'cancelled' ? `<span class="chip danger">${esc(t('Cancelled'))}</span>` : attestationChip(e)}</div>
         <div class="meta">${cat ? `<span class="flex gap-sm"><span class="cat-dot" style="background:${cat.color}"></span>${esc(cat.name)}</span>` : `<span>${esc(kindLabel(e.kind))}</span>`}
           ${e.location ? `<span>${icon('pin', 'sm')} ${esc(e.location)}</span>` : ''}</div>
+        ${e.courseId && e.status !== 'cancelled' ? `<button class="btn ${current ? 'primary' : 'soft'} sm tl-support" data-support="${e.courseId}">${icon('book', 'sm')}${esc(t('Open the support'))}</button>` : ''}
       </div></div>`;
   }
 
@@ -148,14 +174,30 @@ export async function render(root) {
       ? ''
       : `<div class="onboard-card"><span class="ic">${icon('sparkles')}</span>
           <div class="txt"><strong>${esc(ob.step > 1 ? t('Finish personalising your planner') : t('Make this planner yours'))}</strong>
-          <span>${esc(ob.step > 1 ? t('You stopped at step {a} of {b}. Your answers are saved.', { a: ob.step, b: 6 }) : t('Add your institutions, timetable and reminders in about 5 minutes.'))}</span></div>
+          <span>${esc(ob.step > 1 ? t('You stopped at step {a} of {b}. Your answers are saved.', { a: ob.step, b: 6 }) : t('Add your institutions, courses and reminders in about 5 minutes.'))}</span></div>
           <a class="btn primary" href="#/welcome">${esc(ob.step > 1 ? t('Continue') : t('Start'))}${icon('arrowR', 'sm')}</a></div>`;
+    let noteBlock = '';
+    try {
+      const note = composeDayNote(data);
+      rememberDayNote(note);
+      let folded = false;
+      try {
+        folded = localStorage.getItem(NOTE_FOLD_KEY) === note.key;
+      } catch {
+        /* ignore */
+      }
+      noteBlock = `<div data-day-note data-key="${esc(note.key)}">${noteHtml(note, folded)}</div>`;
+      lastNote = note;
+    } catch (err) {
+      console.warn('[day note]', err);
+    }
     root.innerHTML = `
       ${onboard}
       <div class="hero">
         <div style="flex:1;min-width:0"><h2>${esc(greeting())}</h2><p class="cap">${esc(fmtDayYear(now))}</p></div>
         <a class="btn" href="#/calendar">${icon('calendar')}${esc(t('Open calendar'))}</a>
       </div>
+      ${noteBlock}
       ${emailTip}
       <div class="stats">
         <div class="card stat"><div class="label">${icon('clock', 'sm')}${esc(t('This week'))}</div>
@@ -186,15 +228,38 @@ export async function render(root) {
             <h3 style="font-size:15px">${esc(t('Quick actions'))}</h3>
             <button class="btn block" data-scan style="justify-content:flex-start">${icon('scan')}${esc(t('Scan an attestation'))}</button>
             <button class="btn block" data-new-today style="justify-content:flex-start">${icon('plus')}${esc(t('New appointment'))}</button>
+            <a class="btn block" href="#/courses" style="justify-content:flex-start">${icon('book')}${esc(t('Plan a session from my courses'))}</a>
+            <button class="btn block" data-export-pdf style="justify-content:flex-start">${icon('download')}${esc(t('Download my schedule (PDF)'))}</button>
             <a class="btn block" href="#/search" style="justify-content:flex-start">${icon('search')}${esc(t('Search my history'))}</a>
           </div>
         </div>
       </div>`;
   }
 
-  on(root, 'click', '[data-event]', (e, n) => openEventDetails(Number(n.dataset.event)));
+  on(root, 'click', '[data-support]', async (e, b) => {
+    e.stopPropagation();
+    const { openCourseSupport } = await import('../courses.js');
+    openCourseSupport(Number(b.dataset.support));
+  });
+  on(root, 'click', '[data-event]', (e, n) => {
+    if (!e.target.closest('[data-support]')) openEventDetails(Number(n.dataset.event));
+  });
   on(root, 'keydown', '[data-event]', (e, n) => e.key === 'Enter' && openEventDetails(Number(n.dataset.event)));
   on(root, 'click', '[data-new-today]', () => openEventForm({}));
+  on(root, 'click', '[data-dn-fold], [data-dn-unfold]', (e, b) => {
+    const folded = b.matches('[data-dn-fold]');
+    try {
+      if (folded) localStorage.setItem(NOTE_FOLD_KEY, lastNote.key);
+      else localStorage.removeItem(NOTE_FOLD_KEY);
+    } catch {
+      /* ignore */
+    }
+    root.querySelector('[data-day-note]').innerHTML = noteHtml(lastNote, folded);
+  });
+  on(root, 'click', '[data-export-pdf]', async () => {
+    const { exportSchedulePdf } = await import('../exportPdf.js');
+    exportSchedulePdf();
+  });
   on(root, 'click', '[data-go]', (e, n) => (location.hash = `#/${n.dataset.go}`));
   on(root, 'click', '[data-scan]', async () => {
     const { openScanner } = await import('../scanner.js');

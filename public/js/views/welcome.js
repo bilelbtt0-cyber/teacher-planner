@@ -1,6 +1,6 @@
 import { api } from '../api.js';
-import { t, tn, todayStr, addDaysStr, fmtDate, fmtWeekdayLong, reminderLabel, hoursLabel } from '../i18n.js';
-import { state, loadSettings, loadCategories, changed, applyTheme, activeCategories, emit } from '../store.js';
+import { t, tn, todayStr, fmtDate, reminderLabel, hoursLabel, durationLabel } from '../i18n.js';
+import { state, loadSettings, loadCategories, loadCourses, changed, applyTheme, activeCategories, emit } from '../store.js';
 import { esc, icon, on, toast, errorToast, setBusy, CATEGORY_COLORS, PALETTES, paletteGrid, openModal } from '../ui.js';
 
 // The welcome guide: a few friendly steps that collect her answers AND set the app up with them.
@@ -10,7 +10,7 @@ const STEPS = [
   { key: 'intro', title: 'Welcome', icon: 'sparkles' },
   { key: 'about', title: 'About you', icon: 'user' },
   { key: 'institutions', title: 'Institutions', icon: 'building' },
-  { key: 'timetable', title: 'Timetable', icon: 'calendar' },
+  { key: 'courses', title: 'Courses', icon: 'book' },
   { key: 'reminders', title: 'Reminders', icon: 'bell' },
   { key: 'email', title: 'Email', icon: 'mail' },
   { key: 'documents', title: 'Documents & wishes', icon: 'folder' },
@@ -40,9 +40,8 @@ const PROVIDERS = {
   other: { label: 'Other', host: '', port: 587, secure: false },
 };
 
-const DOC_TYPES = ['Attestations', 'Certificates', 'Contracts', 'Payslips', 'Official timetables', 'Mission orders', 'Invoices'];
+const DOC_TYPES = ['Attestations', 'Certificates', 'Contracts', 'Course material', 'Mission orders'];
 const WISHES = [
-  { value: 'payments', label: 'Track my payments (amounts per institution)' },
   { value: 'report', label: 'A monthly hours report to print or send (PDF / Excel)' },
   { value: 'sms', label: 'Reminders by SMS or WhatsApp' },
   { value: 'sync', label: 'See my classes in Google Calendar or on my iPhone' },
@@ -53,21 +52,6 @@ const NAG_CHOICES = [2, 4, 12, 24, 48];
 const REMINDER_CHOICES = [0, 10, 30, 60, 120, 1440, 2880];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-
-function schoolYear() {
-  const now = new Date();
-  const y = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-  return { start: `${y}-09-15`, end: `${y + 1}-06-30` };
-}
-
-/** First date on or after `from` that falls on weekday `day` (0 = Sunday). */
-function firstOnWeekday(from, day) {
-  for (let i = 0; i < 7; i++) {
-    const d = addDaysStr(from, i);
-    if (new Date(`${d}T12:00`).getDay() === day) return d;
-  }
-  return from;
-}
 
 export async function render(root) {
   await loadSettings().catch(() => {});
@@ -106,20 +90,23 @@ export async function render(root) {
     }));
     if (!A.institutions.rows.length) A.institutions.rows.push(newInstitution(0));
   }
-  const sy = schoolYear();
-  A.timetable ||= {
-    yearStart: sy.start,
-    yearEnd: sy.end,
-    dayStart: s.dayStart,
-    dayEnd: s.dayEnd,
-    weekStart: s.weekStart,
-    slots: [],
-    holidays: [],
-    cancelInHolidays: true,
-    extraKinds: '',
-    privateLessons: '',
-    photoDocId: null,
+  // Holidays and working hours used to live in the timetable step: carry over what she entered.
+  const oldT = A.timetable || {};
+  A.courses ||= {
+    rows: [],
+    holidays: oldT.holidays || [],
+    cancelInHolidays: oldT.cancelInHolidays ?? true,
+    dayStart: oldT.dayStart || s.dayStart,
+    dayEnd: oldT.dayEnd || s.dayEnd,
+    weekStart: oldT.weekStart ?? s.weekStart,
+    extraKinds: oldT.extraKinds || '',
   };
+  if (!A.courses.rows.length) {
+    A.courses.rows = state.courses
+      .filter((c) => !c.archived)
+      .map((c) => ({ id: uid(), courseId: c.id, title: c.title, categoryId: c.categoryId || '', duration: c.durationMinutes, location: c.location, summary: c.summary }));
+    if (!A.courses.rows.length) A.courses.rows.push(newCourse());
+  }
   A.reminders ||= {
     defaults: structuredClone(s.defaultReminders || []),
     nagIntervalHours: s.nagIntervalHours,
@@ -136,27 +123,18 @@ export async function render(root) {
   function newInstitution(i) {
     return { id: uid(), categoryId: null, name: '', color: CATEGORY_COLORS[i % CATEGORY_COLORS.length], mode: '', every: '', offset: '', signer: '', notes: '' };
   }
-  function newSlot() {
-    const last = A.timetable.slots[A.timetable.slots.length - 1];
+  function newCourse() {
+    const last = A.courses?.rows[A.courses.rows.length - 1];
     return {
       id: uid(),
-      day: last ? last.day : 1,
-      start: last ? last.end : '08:00',
-      end: last ? addTime(last.end, 120) : '10:00',
+      courseId: null,
       title: '',
       // With one institution it is the obvious choice; with several she picks it herself.
       categoryId: last?.categoryId || (activeCategories().length === 1 ? activeCategories()[0].id : ''),
+      duration: last?.duration || 60,
       location: '',
-      kind: 'class',
-      every: last?.every || '1',
-      seriesId: null,
-      count: 0,
+      summary: '',
     };
-  }
-  function addTime(hhmm, minutes) {
-    const [h, m] = hhmm.split(':').map(Number);
-    const total = Math.min(23 * 60 + 59, h * 60 + m + minutes);
-    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
   }
 
   async function persist(extra = {}) {
@@ -234,7 +212,7 @@ export async function render(root) {
       <div class="wiz-hero">
         <div class="wiz-hero-ic">${icon('sparkles', 'xl')}</div>
         <h2>${esc(t('Welcome, {name}!', { name: (state.user.name || '').split(' ')[0] }))}</h2>
-        <p>${esc(t('Let’s make this planner yours. In 6 short steps we will add your institutions, your timetable and your reminders — the app sets itself up as you answer.'))}</p>
+        <p>${esc(t('Let’s make this planner yours. In 6 short steps we will add your institutions, your courses and your reminders — the app sets itself up as you answer.'))}</p>
         <ul class="wiz-points">
           <li>${icon('clock')}<span>${esc(t('About 5 minutes'))}</span></li>
           <li>${icon('check')}<span>${esc(t('Saved at every step — stop and continue whenever you like'))}</span></li>
@@ -314,61 +292,46 @@ export async function render(root) {
             .join('')}
           <button type="button" class="btn soft" data-add-inst style="align-self:flex-start">${icon('plus', 'sm')}${esc(t('Add another institution'))}</button>
           <div class="wiz-sub">${esc(t('A few more details'))}</div>
-          ${q(t('Is there a deadline to collect your attestations?'), `<input class="input" name="deadline" value="${esc(I.deadline)}" placeholder="${esc(t('e.g. before the end of each month, before payment'))}">`)}
+          ${q(t('Is there a deadline to collect your attestations?'), `<input class="input" name="deadline" value="${esc(I.deadline)}" placeholder="${esc(t('e.g. before the end of each month'))}">`)}
           ${q(t('Does one attestation sometimes cover several sessions?'), yesNo('multiSessions', I.multiSessions), '', 'multiSessions')}
           ${q(t('Have you forgotten attestations that you still need to collect?'), `<textarea class="textarea" name="backlog" rows="2" placeholder="${esc(t('Which ones, and for which dates?'))}">${esc(I.backlog)}</textarea>`, t('We can add them so the app reminds you.'))}
         </div>`;
     },
 
-    timetable: () => {
-      const T = A.timetable;
+    courses: () => {
+      const C = A.courses;
       const cats = activeCategories();
-      const order = T.weekStart === 0 ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 0];
-      const from = T.yearStart > todayStr() ? T.yearStart : todayStr();
-      return `${header(t('Your weekly timetable'), t('Add your usual weekly classes once: the app fills your calendar until the end of the school year.'))}
+      return `${header(t('Your courses'), t('Save the courses you teach once. Then planning a session takes two clicks: pick the course, pick the date. No fixed timetable: you add each session when you need it.'))}
         <div class="stack">
-          <div class="grid-2">
-            <div class="field"><label>${esc(t('First day of the school year'))}</label><input class="input" type="date" name="yearStart" value="${esc(T.yearStart)}"></div>
-            <div class="field"><label>${esc(t('Last day of the school year'))}</label><input class="input" type="date" name="yearEnd" value="${esc(T.yearEnd)}"></div>
-          </div>
-          ${missingKeys.has('year') ? missingNote(t('Please check the dates of the school year.')) : ''}
-          <div class="wiz-sub">${esc(t('Weekly classes'))} <span class="req">*</span></div>
-          <div class="tip">${icon('info')}<span>${esc(t('Classes are added from {from} to {to}. Past weeks are not created.', { from: fmtDate(from), to: fmtDate(T.yearEnd) }))}</span></div>
+          <div class="wiz-sub">${esc(t('Courses'))} <span class="req">*</span></div>
           <div class="stack tight">
-            ${T.slots
-              .map((sl) => {
-                if (sl.seriesId) {
-                  const cat = cats.find((c) => c.id === Number(sl.categoryId));
-                  return `<div class="wiz-slot done">${icon('checkCircle')}<span class="strong">${esc(fmtWeekdayLong(sl.day))} ${esc(sl.start)}–${esc(sl.end)}</span>${sl.every && sl.every !== '1' ? `<span class="chip">${esc(t('every 2 weeks'))}</span>` : ''}
-                    <span>${esc(sl.title)}</span>${cat ? `<span class="chip"><span class="cat-dot" style="background:${cat.color}"></span>${esc(cat.name)}</span>` : ''}
-                    <span class="spacer"></span><span class="small muted">${esc(tn(sl.count, '{n} session in your calendar', '{n} sessions in your calendar'))}</span></div>`;
-                }
-                return `<div class="wiz-slot ${missingKeys.has('slot:' + sl.id) ? 'missing' : ''}" data-slot="${sl.id}" data-missing-text="${esc(t('Check the times and choose the institution.'))}">
-                  <select class="select" data-s="day">${order.map((d) => `<option value="${d}" ${Number(sl.day) === d ? 'selected' : ''}>${esc(fmtWeekdayLong(d))}</option>`).join('')}</select>
-                  <select class="select" data-s="every" title="${esc(t('How often'))}">${[['1', 'Every week'], ['2a', 'Every 2 weeks (from this week)'], ['2b', 'Every 2 weeks (from next week)']]
-                    .map(([v, l]) => `<option value="${v}" ${String(sl.every || '1') === v ? 'selected' : ''}>${esc(t(l))}</option>`)
-                    .join('')}</select>
-                  <input class="input" type="time" data-s="start" value="${esc(sl.start)}" step="60">
-                  <input class="input" type="time" data-s="end" value="${esc(sl.end)}" step="60">
-                  <input class="input grow" data-s="title" value="${esc(sl.title)}" placeholder="${esc(t('Class, e.g. Maths 3A'))}" maxlength="200">
-                  <select class="select" data-s="categoryId"><option value="">${esc(t('— Institution —'))}</option>${cats.map((c) => `<option value="${c.id}" ${Number(sl.categoryId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
-                  <input class="input" data-s="location" value="${esc(sl.location)}" placeholder="${esc(t('Room'))}" maxlength="100" style="max-width:110px">
-                  <button type="button" class="btn ghost icon-only sm" data-dup-slot="${sl.id}" title="${esc(t('Duplicate'))}">${icon('copy', 'sm')}</button>
-                  <button type="button" class="btn ghost icon-only sm" data-del-slot="${sl.id}" title="${esc(t('Remove'))}">${icon('trash', 'sm')}</button>
-                </div>`;
-              })
+            ${C.rows
+              .map(
+                (r) => `<div class="wiz-course ${missingKeys.has('course:' + r.id) ? 'missing' : ''}" data-course="${r.id}" data-missing-text="${esc(t('Give it a name and choose the institution.'))}">
+                  <div class="wiz-slot">
+                    ${r.courseId ? `<span style="color:var(--success)">${icon('checkCircle')}</span>` : ''}
+                    <input class="input grow" data-c="title" value="${esc(r.title)}" placeholder="${esc(t('Course, e.g. Maths 3A'))}" maxlength="200" style="font-weight:600">
+                    <select class="select" data-c="categoryId"><option value="">${esc(t('— Institution —'))}</option>${cats.map((c) => `<option value="${c.id}" ${Number(r.categoryId) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+                    <select class="select" data-c="duration" title="${esc(t('Usual duration'))}">${[45, 60, 90, 120, 180, 240]
+                      .map((d) => `<option value="${d}" ${Number(r.duration) === d ? 'selected' : ''}>${esc(durationLabel(d))}</option>`)
+                      .join('')}</select>
+                    <input class="input" data-c="location" value="${esc(r.location)}" placeholder="${esc(t('Room'))}" maxlength="100" style="max-width:110px">
+                    <button type="button" class="btn ghost icon-only sm" data-dup-course="${r.id}" title="${esc(t('Duplicate'))}">${icon('copy', 'sm')}</button>
+                    ${r.courseId ? '' : `<button type="button" class="btn ghost icon-only sm" data-del-course="${r.id}" title="${esc(t('Remove'))}">${icon('trash', 'sm')}</button>`}
+                  </div>
+                  <textarea class="textarea" data-c="summary" rows="2" placeholder="${esc(t('Summary of the lesson (optional): you can also add it later, with your files, in My courses.'))}">${esc(r.summary)}</textarea>
+                </div>`
+              )
               .join('')}
           </div>
-          ${missingKeys.has('slots') ? missingNote(t('Add at least one weekly class (or a photo of your timetable).')) : ''}
+          ${missingKeys.has('courses') ? missingNote(t('Add at least one course.')) : ''}
           <div class="flex wrap">
-            <button type="button" class="btn soft" data-add-slot>${icon('plus', 'sm')}${esc(t('Add a weekly class'))}</button>
-            <button type="button" class="btn ghost" data-photo>${icon('camera', 'sm')}${esc(T.photoDocId ? t('Timetable photo saved ✓') : t('Or save a photo of your paper timetable'))}</button>
-            <input type="file" accept="image/*,application/pdf" data-photo-input hidden>
+            <button type="button" class="btn soft" data-add-course>${icon('plus', 'sm')}${esc(t('Add a course'))}</button>
           </div>
 
           <div class="wiz-sub">${esc(t('School holidays'))}</div>
           <div class="stack tight">
-            ${T.holidays
+            ${C.holidays
               .map((h) =>
                 h.holidayId
                   ? `<div class="wiz-slot done">${icon('checkCircle')}<span class="strong">${esc(h.name)}</span><span>${esc(fmtDate(h.start))} → ${esc(fmtDate(h.end))}</span>
@@ -385,17 +348,16 @@ export async function render(root) {
           </div>
           <div class="flex wrap">
             <button type="button" class="btn soft" data-add-hol>${icon('plus', 'sm')}${esc(t('Add a holiday period'))}</button>
-            <label class="switch"><input type="checkbox" name="cancelInHolidays" ${T.cancelInHolidays ? 'checked' : ''}><span class="track"></span>${esc(t('Cancel my classes during holidays automatically'))}</label>
+            <label class="switch"><input type="checkbox" name="cancelInHolidays" ${C.cancelInHolidays ? 'checked' : ''}><span class="track"></span>${esc(t('Cancel my classes during holidays automatically'))}</label>
           </div>
 
           <div class="wiz-sub">${esc(t('Your working hours'))}</div>
           <div class="grid-3">
-            <div class="field"><label>${esc(t('Day starts at'))}</label><input class="input" type="time" name="dayStart" value="${esc(T.dayStart)}"></div>
-            <div class="field"><label>${esc(t('Day ends at'))}</label><input class="input" type="time" name="dayEnd" value="${esc(T.dayEnd)}"></div>
-            <div class="field"><label>${esc(t('Week starts on'))}</label>${yesNo('weekStart', String(T.weekStart), [['1', 'Monday'], ['0', 'Sunday']])}</div>
+            <div class="field"><label>${esc(t('Day starts at'))}</label><input class="input" type="time" name="dayStart" value="${esc(C.dayStart)}"></div>
+            <div class="field"><label>${esc(t('Day ends at'))}</label><input class="input" type="time" name="dayEnd" value="${esc(C.dayEnd)}"></div>
+            <div class="field"><label>${esc(t('Week starts on'))}</label>${yesNo('weekStart', String(C.weekStart), [['1', 'Monday'], ['0', 'Sunday']])}</div>
           </div>
-          ${q(t('Other kinds of appointments you would like to track?'), `<input class="input" name="extraKinds" value="${esc(T.extraKinds)}" placeholder="${esc(t('e.g. exam supervision, marking, training I attend'))}">`)}
-          ${q(t('Do you give private lessons?'), `<input class="input" name="privateLessons" value="${esc(T.privateLessons)}" placeholder="${esc(t('If yes: would you like to note the student, the price, the payment?'))}">`)}
+          ${q(t('Other kinds of appointments you would like to track?'), `<input class="input" name="extraKinds" value="${esc(C.extraKinds)}" placeholder="${esc(t('e.g. exam supervision, marking, training I attend'))}">`)}
         </div>`;
     },
 
@@ -496,9 +458,8 @@ export async function render(root) {
     done: () => {
       const cats = activeCategories();
       const rules = cats.filter((c) => c.attestationMode);
-      const slots = A.timetable.slots.filter((x) => x.seriesId);
-      const sessions = slots.reduce((n, x) => n + (x.count || 0), 0);
-      const hols = A.timetable.holidays.filter((h) => h.holidayId);
+      const courses = A.courses.rows.filter((x) => x.courseId);
+      const hols = A.courses.holidays.filter((h) => h.holidayId);
       const emailOk = state.settings.smtpConfigured;
       const item = (ic, text, okFlag = true) => `<li class="${okFlag ? '' : 'todo'}">${icon(okFlag ? ic : 'alertCircle')}<span>${text}</span></li>`;
       return `<div class="wiz-hero">
@@ -507,13 +468,13 @@ export async function render(root) {
           <p>${esc(t('Here is what we set up together:'))}</p>
           <ul class="wiz-summary">
             ${item('building', esc(tn(cats.length, '{n} institution', '{n} institutions')) + (rules.length ? ` · ${esc(tn(rules.length, '{n} with an attestation rule', '{n} with an attestation rule'))}` : ''), cats.length > 0)}
-            ${item('calendar', slots.length ? esc(tn(slots.length, '{n} weekly class', '{n} weekly classes')) + ` · ${esc(tn(sessions, '{n} session in your calendar', '{n} sessions in your calendar'))}` : esc(t('No weekly class yet — add them from the calendar')), slots.length > 0)}
+            ${item('book', courses.length ? esc(tn(courses.length, '{n} course in My courses', '{n} courses in My courses')) : esc(t('No course yet — add them in My courses')), courses.length > 0)}
             ${hols.length ? item('sun', esc(tn(hols.length, '{n} holiday period', '{n} holiday periods'))) : ''}
             ${item('bell', esc(t('Reminders: {list}', { list: A.reminders.defaults.map((r) => reminderLabel(r.minutes)).join(', ') || t('none') })))}
             ${item('mail', esc(emailOk ? t('Email reminders are on') : t('Email not connected yet — reminders appear in the app')), emailOk)}
           </ul>
           <div class="flex wrap" style="justify-content:center;margin-top:10px">
-            <a class="btn primary lg" href="#/calendar">${icon('calendar')}${esc(t('Open my calendar'))}</a>
+            <a class="btn primary lg" href="#/courses">${icon('book')}${esc(t('Plan my first sessions'))}</a>
             <a class="btn lg" href="#/today">${esc(t('Go to today'))}</a>
             ${emailOk ? '' : `<a class="btn ghost lg" href="#/settings?s=email">${icon('mail')}${esc(t('Connect my email'))}</a>`}
           </div>
@@ -538,16 +499,16 @@ export async function render(root) {
         rowEl.querySelectorAll('[data-f]').forEach((inp) => (r[inp.dataset.f] = inp.value));
       });
       for (const k of ['deadline', 'backlog']) A.institutions[k] = val(k) ?? A.institutions[k];
-    } else if (key === 'timetable') {
-      const T = A.timetable;
-      for (const k of ['yearStart', 'yearEnd', 'dayStart', 'dayEnd', 'extraKinds', 'privateLessons']) T[k] = val(k) ?? T[k];
-      T.cancelInHolidays = val('cancelInHolidays') ?? T.cancelInHolidays;
-      root.querySelectorAll('[data-slot]').forEach((el) => {
-        const sl = T.slots.find((x) => x.id === el.dataset.slot);
-        el.querySelectorAll('[data-s]').forEach((inp) => (sl[inp.dataset.s] = inp.dataset.s === 'day' ? Number(inp.value) : inp.value));
+    } else if (key === 'courses') {
+      const C = A.courses;
+      for (const k of ['dayStart', 'dayEnd', 'extraKinds']) C[k] = val(k) ?? C[k];
+      C.cancelInHolidays = val('cancelInHolidays') ?? C.cancelInHolidays;
+      root.querySelectorAll('[data-course]').forEach((el) => {
+        const r = C.rows.find((x) => x.id === el.dataset.course);
+        el.querySelectorAll('[data-c]').forEach((inp) => (r[inp.dataset.c] = inp.dataset.c === 'duration' ? Number(inp.value) : inp.value));
       });
       root.querySelectorAll('[data-hol]').forEach((el) => {
-        const h = T.holidays.find((x) => x.id === el.dataset.hol);
+        const h = C.holidays.find((x) => x.id === el.dataset.hol);
         el.querySelectorAll('[data-h]').forEach((inp) => (h[inp.dataset.h] = inp.value));
       });
     } else if (key === 'reminders') {
@@ -592,39 +553,35 @@ export async function render(root) {
       A.institutions.rows = A.institutions.rows.filter((r) => r.name.trim() || !r.categoryId);
       await loadCategories();
     },
-    async timetable() {
-      const T = A.timetable;
-      if (!T.yearStart || !T.yearEnd || T.yearEnd <= T.yearStart) throw new Error(t('Please check the dates of the school year.'));
-      await api.put('/api/settings', { dayStart: T.dayStart, dayEnd: T.dayEnd, weekStart: Number(T.weekStart) });
-      // Holidays first, so classes created next already skip them.
-      for (const h of T.holidays) {
+    async courses() {
+      const C = A.courses;
+      await api.put('/api/settings', { dayStart: C.dayStart, dayEnd: C.dayEnd, weekStart: Number(C.weekStart) });
+      for (const h of C.holidays) {
         if (h.holidayId || !h.name.trim()) continue;
         if (!h.start || !h.end || h.end < h.start) throw new Error(t('Please check the dates of “{name}”.', { name: h.name }));
-        const res = await api.post('/api/holidays', { name: h.name.trim(), start: h.start, end: h.end, cancelClasses: T.cancelInHolidays });
+        const res = await api.post('/api/holidays', { name: h.name.trim(), start: h.start, end: h.end, cancelClasses: C.cancelInHolidays });
         h.holidayId = res.holiday.id;
       }
-      const from = T.yearStart > todayStr() ? T.yearStart : todayStr();
-      for (const sl of T.slots) {
-        if (sl.seriesId || !sl.title.trim()) continue;
-        if (!sl.start || !sl.end || sl.end <= sl.start) throw new Error(t('Check the times of “{name}”: the end must be after the start.', { name: sl.title }));
-        // Every 2 weeks: she picks whether it starts this week or next week (week A / week B).
-        const date = sl.every === '2b' ? addDaysStr(firstOnWeekday(from, Number(sl.day)), 7) : firstOnWeekday(from, Number(sl.day));
-        if (date > T.yearEnd) continue;
-        const res = await api.post('/api/events', {
-          title: sl.title.trim(),
-          kind: sl.kind || 'class',
-          categoryId: sl.categoryId ? Number(sl.categoryId) : null,
-          location: sl.location,
-          start: `${date}T${sl.start}`,
-          end: `${date}T${sl.end}`,
-          reminders: state.settings.defaultReminders,
-          recurrence: { freq: 'weekly', interval: sl.every && sl.every !== '1' ? 2 : 1, byweekday: [Number(sl.day)], until: T.yearEnd },
-        });
-        sl.seriesId = res.event.seriesId;
-        sl.count = res.count;
+      for (const r of C.rows) {
+        if (!r.title.trim()) continue;
+        const body = {
+          title: r.title.trim(),
+          kind: 'class',
+          categoryId: r.categoryId ? Number(r.categoryId) : null,
+          location: r.location,
+          durationMinutes: Number(r.duration) || 60,
+          summary: r.summary || '',
+        };
+        if (r.courseId) {
+          // Keep what she may have changed since in My courses (kind, files…): only update these answers.
+          const current = state.courses.find((c) => c.id === r.courseId);
+          if (current) await api.put(`/api/courses/${r.courseId}`, { ...current, ...body, kind: current.kind });
+          else r.courseId = (await api.post('/api/courses', body)).id;
+        } else r.courseId = (await api.post('/api/courses', body)).id;
       }
-      T.slots = T.slots.filter((x) => x.seriesId || x.title.trim());
-      T.holidays = T.holidays.filter((h) => h.holidayId || h.name.trim());
+      C.rows = C.rows.filter((x) => x.courseId || x.title.trim());
+      C.holidays = C.holidays.filter((h) => h.holidayId || h.name.trim());
+      await loadCourses();
       changed();
     },
     async reminders() {
@@ -663,14 +620,13 @@ export async function render(root) {
         if (!r.name.trim() || !r.mode || (r.mode === 'hours' && !(Number(r.every) > 0))) m.add('row:' + r.id);
       }
       if (!A.institutions.multiSessions) m.add('multiSessions');
-    } else if (key === 'timetable') {
-      const T = A.timetable;
-      if (!T.yearStart || !T.yearEnd || T.yearEnd <= T.yearStart) m.add('year');
-      if (!T.slots.some((x) => x.seriesId || x.title.trim()) && !T.photoDocId) m.add('slots');
+    } else if (key === 'courses') {
+      const C = A.courses;
+      if (!C.rows.some((x) => x.title.trim())) m.add('courses');
       const needInstitution = activeCategories().length > 0;
-      for (const x of T.slots) {
-        if (x.seriesId || !x.title.trim()) continue;
-        if (!x.start || !x.end || x.end <= x.start || (needInstitution && !x.categoryId)) m.add('slot:' + x.id);
+      for (const x of C.rows) {
+        if (!x.title.trim()) continue;
+        if (needInstitution && !x.categoryId) m.add('course:' + x.id);
       }
     } else if (key === 'reminders') {
       if (!A.reminders.smsWish) m.add('smsWish');
@@ -777,7 +733,7 @@ export async function render(root) {
         return;
       }
     } else if (key === 'institutions') A.institutions[name] = v;
-    else if (key === 'timetable') A.timetable[name] = name === 'weekStart' ? Number(v) : v;
+    else if (key === 'courses') A.courses[name] = name === 'weekStart' ? Number(v) : v;
     else if (key === 'reminders') A.reminders[name] = name === 'digestEnabled' ? v === 'yes' : v;
     else if (key === 'email') A.email[name] = v;
     else if (key === 'documents') A.documents[name] = v;
@@ -827,53 +783,34 @@ export async function render(root) {
     A.institutions.rows.find((r) => r.id === b.closest('[data-row]').dataset.row).mode = b.dataset.mode;
     rerender();
   });
-  // timetable
-  on(root, 'click', '[data-add-slot]', () => {
+  // courses
+  on(root, 'click', '[data-add-course]', () => {
     collect();
-    A.timetable.slots.push(newSlot());
+    A.courses.rows.push(newCourse());
+    rerender();
+    root.querySelector('[data-course]:last-of-type [data-c="title"]')?.focus();
+  });
+  on(root, 'click', '[data-dup-course]', (e, b) => {
+    collect();
+    const i = A.courses.rows.findIndex((x) => x.id === b.dataset.dupCourse);
+    A.courses.rows.splice(i + 1, 0, { ...A.courses.rows[i], id: uid(), courseId: null });
     rerender();
   });
-  on(root, 'click', '[data-dup-slot]', (e, b) => {
+  on(root, 'click', '[data-del-course]', (e, b) => {
     collect();
-    const i = A.timetable.slots.findIndex((x) => x.id === b.dataset.dupSlot);
-    const copy = { ...A.timetable.slots[i], id: uid(), seriesId: null, count: 0, day: (Number(A.timetable.slots[i].day) + 1) % 7 };
-    A.timetable.slots.splice(i + 1, 0, copy);
-    rerender();
-  });
-  on(root, 'click', '[data-del-slot]', (e, b) => {
-    collect();
-    A.timetable.slots = A.timetable.slots.filter((x) => x.id !== b.dataset.delSlot);
+    A.courses.rows = A.courses.rows.filter((x) => x.id !== b.dataset.delCourse);
+    if (!A.courses.rows.length) A.courses.rows.push(newCourse());
     rerender();
   });
   on(root, 'click', '[data-add-hol]', () => {
     collect();
-    A.timetable.holidays.push({ id: uid(), name: '', start: '', end: '', holidayId: null });
+    A.courses.holidays.push({ id: uid(), name: '', start: '', end: '', holidayId: null });
     rerender();
   });
   on(root, 'click', '[data-del-hol]', (e, b) => {
     collect();
-    A.timetable.holidays = A.timetable.holidays.filter((x) => x.id !== b.dataset.delHol);
+    A.courses.holidays = A.courses.holidays.filter((x) => x.id !== b.dataset.delHol);
     rerender();
-  });
-  on(root, 'click', '[data-photo]', () => root.querySelector('[data-photo-input]').click());
-  on(root, 'change', '[data-photo-input]', async (e, inp) => {
-    const file = inp.files[0];
-    if (!file) return;
-    collect();
-    const fd = new FormData();
-    fd.append('file', file, file.name);
-    fd.append('title', t('My timetable'));
-    fd.append('docType', 'other');
-    fd.append('docDate', todayStr());
-    fd.append('tags', t('timetable'));
-    try {
-      const doc = await api.upload('/api/documents', fd);
-      A.timetable.photoDocId = doc.id;
-      toast(t('Photo saved in My documents. We can enter the classes for you from it.'), { type: 'success', duration: 6000 });
-      rerender();
-    } catch (err) {
-      errorToast(err);
-    }
   });
   // reminders
   on(root, 'click', '[data-rem]', (e, b) => {
@@ -941,7 +878,7 @@ export function openAnswersSummary() {
   const modeLabel = (m) => t(MODES.find((x) => x.value === m)?.label || 'No attestation');
   const a = A.about || {};
   const I = A.institutions || {};
-  const T = A.timetable || {};
+  const C = A.courses || {};
   const R = A.reminders || {};
   const E = A.email || {};
   const D = A.documents || {};
@@ -963,13 +900,10 @@ export function openAnswersSummary() {
       row(t('One attestation for several sessions'), esc(yes(I.multiSessions))),
       row(t('Forgotten attestations'), esc(I.backlog)),
     ])}
-    ${section(t('Timetable'), [
-      row(t('School year'), T.yearStart ? esc(`${fmtDate(T.yearStart)} → ${fmtDate(T.yearEnd)}`) : '—'),
-      row(t('Weekly classes'), esc((T.slots || []).filter((s) => s.title).map((s) => `${fmtWeekdayLong(s.day)} ${s.start}–${s.end} ${s.title}`).join(' · '))),
-      row(t('Holidays'), esc((T.holidays || []).filter((h) => h.name).map((h) => `${h.name} (${h.start} → ${h.end})`).join(' · '))),
-      row(t('Other kinds of appointments'), esc(T.extraKinds)),
-      row(t('Private lessons'), esc(T.privateLessons)),
-      row(t('Timetable photo'), T.photoDocId ? esc(t('Saved in My documents')) : '—'),
+    ${section(t('Courses'), [
+      row(t('Courses'), esc((C.rows || []).filter((r) => r.title).map((r) => `${r.title} (${durationLabel(Number(r.duration) || 60)})`).join(' · '))),
+      row(t('Holidays'), esc((C.holidays || []).filter((h) => h.name).map((h) => `${h.name} (${h.start} → ${h.end})`).join(' · '))),
+      row(t('Other kinds of appointments'), esc(C.extraKinds)),
     ])}
     ${section(t('Reminders'), [
       row(t('Before each class'), esc((R.defaults || []).map((r) => reminderLabel(r.minutes)).join(', '))),

@@ -203,6 +203,38 @@ const MIGRATIONS = [
   ALTER TABLE documents ADD COLUMN file_data BLOB;
   ALTER TABLE documents ADD COLUMN thumb_data BLOB;
   `,
+  // 4: a library of courses, each with its summary and support files; sessions no longer repeat;
+  // payslips are no longer a document type.
+  `
+  CREATE TABLE courses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'class',
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    location TEXT NOT NULL DEFAULT '',
+    duration_minutes INTEGER NOT NULL DEFAULT 60,
+    summary TEXT NOT NULL DEFAULT '',
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  ALTER TABLE events ADD COLUMN course_id INTEGER REFERENCES courses(id) ON DELETE SET NULL;
+  CREATE INDEX idx_events_course ON events(course_id);
+  ALTER TABLE documents ADD COLUMN course_id INTEGER REFERENCES courses(id) ON DELETE SET NULL;
+  CREATE INDEX idx_documents_course ON documents(course_id);
+  UPDATE documents SET doc_type = 'other' WHERE doc_type = 'payslip';
+
+  CREATE TABLE announcements (
+    key TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at TEXT
+  );
+  INSERT INTO announcements (key) SELECT 'courses-library' WHERE EXISTS (SELECT 1 FROM users);
+  `,
+  // 5: the text read from each document, so it can be found by the words it contains.
+  `
+  ALTER TABLE documents ADD COLUMN ocr_text TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 /** Creates or upgrades the schema. Called once before the server starts listening. */
@@ -247,6 +279,9 @@ export const DEFAULT_SETTINGS = {
   accentColor: '#e0457b',
   // The welcome guide: where she stopped, and every answer she gave (also read by the developer).
   onboarding: { completed: false, completedAt: null, step: 0, answers: {} },
+  // The "word of the day": the phrases chosen today (so it stays the same all day) and the ones
+  // used recently (so it does not repeat itself from one day to the next).
+  dayNote: { picks: {}, history: [], days: [] },
 };
 
 export async function getSettings() {

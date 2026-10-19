@@ -3,17 +3,29 @@ import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, transaction, getSettings, UPLOAD_DIR } from '../db.js';
-import { httpError } from '../recurrence.js';
+import { httpError } from '../errors.js';
 import { isDateOnly, nowIn } from '../time.js';
 import { recomputeCategory } from '../attestation.js';
 
-export const DOC_TYPES = ['attestation', 'certificate', 'contract', 'payslip', 'other'];
-const ALLOWED = {
+export const DOC_TYPES = ['attestation', 'certificate', 'contract', 'support', 'other'];
+export const ALLOWED = {
   'application/pdf': '.pdf',
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
+  // Course material is often prepared in Word, PowerPoint or Excel.
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.oasis.opendocument.text': '.odt',
+  'application/vnd.oasis.opendocument.presentation': '.odp',
+  'text/plain': '.txt',
 };
+const MIME_BY_EXT = Object.fromEntries(Object.entries(ALLOWED).map(([mime, ext]) => [ext, mime]));
+MIME_BY_EXT['.jpeg'] = 'image/jpeg';
 export const MAX_FILE_MB = 15;
 
 // Files are kept in memory just long enough to be written into the database.
@@ -22,8 +34,10 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 2 },
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'thumb' && file.mimetype !== 'image/jpeg') return cb(httpError(400, 'Invalid thumbnail.'));
+    // Some browsers send Office files without a type: recognise them by their extension.
+    if (!ALLOWED[file.mimetype]) file.mimetype = MIME_BY_EXT[path.extname(file.originalname || '').toLowerCase()] || file.mimetype;
     if (ALLOWED[file.mimetype]) cb(null, true);
-    else cb(httpError(400, 'Only PDF, JPG, PNG or WebP files can be saved.'));
+    else cb(httpError(400, 'This type of file cannot be saved. Use PDF, photos, Word, PowerPoint or Excel.'));
   },
 });
 
@@ -66,6 +80,9 @@ export async function serializeDoc(d) {
     categoryId: d.category_id,
     categoryName: d.category_name ?? null,
     categoryColor: d.category_color ?? null,
+    courseId: d.course_id ?? null,
+    courseTitle: d.course_title ?? null,
+    hasText: !!d.has_text,
     hasThumb: !!d.has_thumb || d.mime.startsWith('image/'),
     events: await linkedEvents(d.id),
     notes: d.notes,
@@ -79,11 +96,12 @@ export async function serializeDoc(d) {
 // Never select the file contents when listing: only when a file is actually opened.
 export const DOC_SELECT = `
   SELECT d.id, d.title, d.file_name, d.original_name, d.mime, d.size, d.doc_type, d.doc_date, d.period_from, d.period_to,
-    d.hours, d.category_id, d.notes, d.tags, d.pages, d.created_at, d.updated_at,
-    (d.thumb_name IS NOT NULL OR d.thumb_data IS NOT NULL) AS has_thumb,
-    c.name AS category_name, c.color AS category_color
+    d.hours, d.category_id, d.course_id, d.notes, d.tags, d.pages, d.created_at, d.updated_at,
+    (d.thumb_name IS NOT NULL OR d.thumb_data IS NOT NULL) AS has_thumb, (d.ocr_text != '') AS has_text,
+    c.name AS category_name, c.color AS category_color, co.title AS course_title
   FROM documents d
-  LEFT JOIN categories c ON c.id = d.category_id`;
+  LEFT JOIN categories c ON c.id = d.category_id
+  LEFT JOIN courses co ON co.id = d.course_id`;
 
 async function parseIds(v) {
   if (v === undefined) return undefined;
@@ -132,7 +150,13 @@ async function cleanMeta(body, partial) {
     if (id && !(await db.get('SELECT id FROM categories WHERE id = ?', id))) throw httpError(400, 'That institution no longer exists.');
     f.category_id = id || null;
   }
+  if (!partial || body.courseId !== undefined) {
+    const id = body.courseId ? parseInt(body.courseId, 10) : null;
+    if (id && !(await db.get('SELECT id FROM courses WHERE id = ?', id))) throw httpError(400, 'That course no longer exists.');
+    f.course_id = id || null;
+  }
   if (!partial || body.notes !== undefined) f.notes = String(body.notes ?? '').slice(0, 5000);
+  if (body.ocrText !== undefined) f.ocr_text = String(body.ocrText ?? '').slice(0, 200000);
   if (!partial || body.tags !== undefined) {
     const tags = Array.isArray(body.tags) ? body.tags : String(body.tags ?? '').split(',');
     f.tags = [...new Set(tags.map((t) => String(t).trim().replace(/,/g, '')).filter(Boolean))].slice(0, 20).join(',');
@@ -171,12 +195,12 @@ export const documentsRouter = Router();
 documentsRouter.get('/', async (req, res) => {
   const where = [];
   const args = [];
-  const { q, type, categoryId, from, to, eventId, sort } = req.query;
+  const { q, type, categoryId, courseId, from, to, eventId, sort } = req.query;
   if (q) {
     const like = `%${String(q).trim()}%`;
-    where.push(`(d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR d.original_name LIKE ? OR c.name LIKE ?
+    where.push(`(d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR d.original_name LIKE ? OR c.name LIKE ? OR co.title LIKE ? OR d.ocr_text LIKE ?
       OR EXISTS (SELECT 1 FROM document_events de JOIN events e ON e.id = de.event_id WHERE de.document_id = d.id AND e.title LIKE ?))`);
-    args.push(like, like, like, like, like, like);
+    args.push(like, like, like, like, like, like, like, like);
   }
   if (type && DOC_TYPES.includes(type)) {
     where.push('d.doc_type = ?');
@@ -185,6 +209,10 @@ documentsRouter.get('/', async (req, res) => {
   if (categoryId) {
     where.push('d.category_id = ?');
     args.push(parseInt(categoryId, 10));
+  }
+  if (courseId) {
+    where.push('d.course_id = ?');
+    args.push(parseInt(courseId, 10));
   }
   if (eventId) {
     where.push('EXISTS (SELECT 1 FROM document_events de WHERE de.document_id = d.id AND de.event_id = ?)');
@@ -215,7 +243,10 @@ async function loadDoc(id) {
 }
 
 documentsRouter.get('/:id', async (req, res) => {
-  res.json(await serializeDoc(await loadDoc(parseInt(req.params.id, 10))));
+  const id = parseInt(req.params.id, 10);
+  const doc = await serializeDoc(await loadDoc(id));
+  doc.ocrText = (await db.get('SELECT ocr_text FROM documents WHERE id = ?', id)).ocr_text;
+  res.json(doc);
 });
 
 function sendBytes(res, data, mime, disposition, niceName) {
@@ -267,8 +298,8 @@ documentsRouter.post('/', uploadFiles, async (req, res) => {
   const id = await transaction(async () => {
     const { lastInsertRowid: newId } = await db.run(
       `INSERT INTO documents (title, file_name, original_name, mime, size, doc_type, doc_date, period_from, period_to,
-        hours, category_id, notes, tags, pages, file_data, thumb_data)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        hours, category_id, course_id, notes, tags, pages, file_data, thumb_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       meta.title,
       fileName(file),
       file.originalname || '',
@@ -280,6 +311,7 @@ documentsRouter.post('/', uploadFiles, async (req, res) => {
       meta.period_to,
       meta.hours,
       meta.category_id,
+      meta.course_id,
       meta.notes,
       meta.tags,
       meta.pages || 1,
@@ -309,6 +341,8 @@ documentsRouter.put('/:id', uploadFiles, async (req, res) => {
       file_data: file.buffer,
       thumb_data: thumb ? thumb.buffer : null,
       thumb_name: null,
+      // A new file means new text: it is read again.
+      ocr_text: meta.ocr_text ?? '',
     });
   }
   const keys = Object.keys(meta);

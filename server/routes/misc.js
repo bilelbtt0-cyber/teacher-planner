@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { ZipArchive } from 'archiver';
 import { db, getSettings, saveSettings, DEFAULT_SETTINGS } from '../db.js';
-import { httpError } from '../recurrence.js';
+import { httpError } from '../errors.js';
 import { nowIn, addDays, datePart, isDateOnly, isValidTimezone, toDate } from '../time.js';
 import { serializeEvent, KINDS } from './events.js';
-import { serializeDoc, DOC_SELECT } from './documents.js';
+import { serializeDoc, DOC_SELECT, ALLOWED } from './documents.js';
 import { categoryProgress, teachingHours } from '../attestation.js';
 import { sendMail, emailConfigured, emailManaged, recipient, layout } from '../mailer.js';
 import { tick } from '../scheduler.js';
@@ -67,6 +67,11 @@ miscRouter.get('/dashboard', async (req, res) => {
     },
     progress: progress.filter((p) => p.everyHours),
     emailReady: emailConfigured(settings) && settings.emailEnabled,
+    // For the "word of the day": how yesterday went, and whether today is a holiday.
+    yesterdayHours: round(
+      (await db.all('SELECT * FROM events WHERE start >= ? AND start < ?', addDays(today, -1), today)).reduce((sum, e) => sum + teachingHours(e), 0)
+    ),
+    holiday: (await db.get('SELECT name FROM holidays WHERE start_date <= ? AND end_date >= ? LIMIT 1', today.slice(0, 10), today.slice(0, 10)))?.name || null,
   });
 });
 
@@ -154,8 +159,9 @@ miscRouter.get('/search', async (req, res) => {
     const like = `%${term}%`;
     const rows = await db.all(
       `${DOC_SELECT}
-       WHERE d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR c.name LIKE ? OR d.original_name LIKE ?
+       WHERE d.title LIKE ? OR d.notes LIKE ? OR d.tags LIKE ? OR c.name LIKE ? OR d.original_name LIKE ? OR d.ocr_text LIKE ?
        ORDER BY COALESCE(d.doc_date, d.created_at) DESC LIMIT 50`,
+      like,
       like,
       like,
       like,
@@ -273,6 +279,17 @@ miscRouter.put('/settings', async (req, res) => {
     };
   }
   if (b.digestEnabled !== undefined) patch.digestEnabled = !!b.digestEnabled;
+  if (b.dayNote !== undefined) {
+    const n = b.dayNote;
+    if (!n || typeof n !== 'object' || Array.isArray(n) || JSON.stringify(n).length > 20000) throw httpError(400, 'Invalid answers.');
+    patch.dayNote = {
+      picks: n.picks && typeof n.picks === 'object' ? n.picks : {},
+      history: Array.isArray(n.history) ? n.history.map(String).slice(-150) : [],
+      days: Array.isArray(n.days)
+        ? n.days.slice(-10).map((d) => ({ d: String(d?.d || '').slice(0, 10), ids: Array.isArray(d?.ids) ? d.ids.map(String).slice(0, 20) : [] }))
+        : [],
+    };
+  }
   if (b.nagIntervalHours !== undefined) {
     const n = Number(b.nagIntervalHours);
     if (!Number.isFinite(n) || n < 1 || n > 168) throw httpError(400, 'The reminder interval must be between 1 and 168 hours.');
@@ -366,7 +383,7 @@ miscRouter.get('/export/calendar.ics', async (req, res) => {
  */
 miscRouter.get('/export/backup', async (req, res) => {
   const date = nowIn((await getSettings()).timezone).slice(0, 10);
-  const tables = ['users', 'settings', 'categories', 'series', 'events', 'holidays', 'documents', 'document_events', 'notifications'];
+  const tables = ['users', 'settings', 'categories', 'courses', 'series', 'events', 'holidays', 'documents', 'document_events', 'notifications'];
   const data = { exportedAt: new Date().toISOString(), version: 1, tables: {} };
   for (const t of tables) {
     const rows = await db.all(t === 'documents' ? 'SELECT * FROM documents' : `SELECT * FROM ${t}`);
@@ -389,11 +406,10 @@ miscRouter.get('/export/backup', async (req, res) => {
   archive.pipe(res);
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
   const docs = await db.all('SELECT id, title, mime FROM documents WHERE file_data IS NOT NULL');
-  const ext = { 'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
   for (const d of docs) {
     const { file_data: bytes } = await db.get('SELECT file_data FROM documents WHERE id = ?', d.id);
     const safe = d.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 80) || 'document';
-    archive.append(Buffer.from(bytes), { name: `documents/${d.id} - ${safe}${ext[d.mime] || ''}` });
+    archive.append(Buffer.from(bytes), { name: `documents/${d.id} - ${safe}${ALLOWED[d.mime] || ''}` });
   }
   archive.append(
     'Planner backup\n\n- data.json: all appointments, institutions, attestations and settings (readable text).\n- documents/: every scanned document, ready to open.\n',

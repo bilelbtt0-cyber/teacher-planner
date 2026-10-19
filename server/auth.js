@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { db } from './db.js';
-import { httpError } from './recurrence.js';
+import { httpError } from './errors.js';
 
 const COOKIE = 'tp_session';
 // She stays signed in on her device: a session lasts a year and is renewed when she uses the app.

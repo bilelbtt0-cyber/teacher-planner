@@ -1,19 +1,20 @@
 import { api, setUnauthorizedHandler } from './api.js';
 import { t, tn, timeAgo, setLanguage } from './i18n.js';
-import { state, subscribe, loadSettings, loadCategories, startPolling, stopPolling, refreshNotifications, applyTheme, appName } from './store.js';
+import { state, subscribe, loadSettings, loadCategories, loadCourses, startPolling, stopPolling, refreshNotifications, applyTheme, appName } from './store.js';
 import { esc, el, icon, on, toast, errorToast, setBusy, hasOpenModal, initials } from './ui.js';
 import { openEventForm, openEventDetails } from './eventForm.js';
 
 const ROUTES = {
   today: { title: 'Today', icon: 'sun', load: () => import('./views/today.js') },
   calendar: { title: 'Calendar', icon: 'calendar', load: () => import('./views/calendar.js'), wide: true },
+  courses: { title: 'My courses', icon: 'book', load: () => import('./views/courses.js') },
   attestations: { title: 'Attestations', icon: 'attestation', load: () => import('./views/attestations.js') },
   documents: { title: 'My documents', icon: 'folder', load: () => import('./views/documents.js') },
   search: { title: 'Search & history', icon: 'search', load: () => import('./views/search.js') },
   settings: { title: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
   welcome: { title: 'Welcome', icon: 'sparkles', load: () => import('./views/welcome.js') },
 };
-const NAV = ['today', 'calendar', 'attestations', 'documents', 'search'];
+const NAV = ['today', 'calendar', 'courses', 'attestations', 'documents', 'search'];
 
 const app = document.getElementById('app');
 let cleanup = null;
@@ -50,7 +51,7 @@ async function boot() {
 
 async function startApp() {
   try {
-    await Promise.all([loadSettings(), loadCategories()]);
+    await Promise.all([loadSettings(), loadCategories(), loadCourses()]);
   } catch (err) {
     errorToast(err);
     return;

@@ -8,6 +8,7 @@ export const state = {
   user: null,
   settings: null,
   categories: [],
+  courses: [],
   notifications: { unread: 0, pendingAttestations: 0, items: [] },
 };
 
@@ -26,6 +27,14 @@ export const eventColor = (e) => categoryById(e.categoryId)?.color || '#8a8aa0';
 export async function loadCategories() {
   state.categories = await api.get('/api/categories');
   emit('categories');
+}
+
+export const courseById = (id) => state.courses.find((c) => c.id === id) || null;
+export const activeCourses = () => state.courses.filter((c) => !c.archived);
+
+export async function loadCourses() {
+  state.courses = await api.get('/api/courses');
+  emit('courses');
 }
 
 export async function loadSettings() {

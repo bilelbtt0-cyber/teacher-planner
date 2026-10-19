@@ -5,6 +5,7 @@ import { authRouter, requireAuth } from './auth.js';
 import { eventsRouter } from './routes/events.js';
 import { categoriesRouter } from './routes/categories.js';
 import { documentsRouter } from './routes/documents.js';
+import { coursesRouter } from './routes/courses.js';
 import { miscRouter } from './routes/misc.js';
 import { holidaysRouter } from './routes/holidays.js';
 import { startScheduler, tick } from './scheduler.js';
@@ -29,6 +30,16 @@ app.use('/vendor/fullcalendar', express.static(nm('fullcalendar'), vendor));
 app.use('/vendor/fullcalendar-locales', express.static(nm('@fullcalendar/core/locales'), vendor));
 app.use('/vendor/jspdf', express.static(nm('jspdf/dist'), vendor));
 app.use('/vendor/inter', express.static(nm('@fontsource-variable/inter'), vendor));
+// Text recognition (Tesseract) and PDF reading (PDF.js) run in the browser, with files served from here.
+app.use('/vendor/tesseract', express.static(nm('tesseract.js/dist'), vendor));
+app.use('/vendor/tesseract-core', express.static(nm('tesseract.js-core'), vendor));
+app.use('/vendor/pdfjs', express.static(nm('pdfjs-dist/build'), vendor));
+const TESS_LANGS = ['fra', 'ara', 'eng'];
+app.get('/vendor/tessdata/:file', (req, res, next) => {
+  const lang = req.params.file.replace(/\.traineddata\.gz$/, '');
+  if (!TESS_LANGS.includes(lang)) return next();
+  res.sendFile(nm(`@tesseract.js-data/${lang}/4.0.0_best_int/${lang}.traineddata.gz`), { maxAge: '30d' }, (err) => err && next());
+});
 app.use(express.static(path.join(ROOT, 'public'), { index: 'index.html', maxAge: 0 }));
 
 // Public health check. An external pinger calls it every few minutes: it keeps a free host awake
@@ -47,6 +58,7 @@ app.use('/api', requireAuth);
 app.use('/api/events', eventsRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/documents', documentsRouter);
+app.use('/api/courses', coursesRouter);
 app.use('/api/holidays', holidaysRouter);
 app.use('/api', miscRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
