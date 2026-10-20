@@ -152,7 +152,9 @@ export function openModal({ title, content, footer = '', size = '', onClose, dis
     root: backdrop.querySelector('.modal'),
     close: async (force = false) => {
       if (closed) return;
-      if (!force && onClose && (await onClose()) === false) return;
+      // onClose always runs, so whoever opened the window gets its result (e.g. the saved item).
+      // A forced close (after a successful save) cannot be vetoed by it.
+      if (onClose && (await onClose()) === false && !force) return;
       closed = true;
       backdrop.remove();
       const i = openStack.indexOf(api);

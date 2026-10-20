@@ -998,4 +998,12 @@ export const FR = {
   'A reminder in the app 1 hour before. Missing attestations: one email every 2 days. No morning email.': 'Un rappel dans l’application 1 h avant. Attestations manquantes : un email tous les 2 jours. Pas d’email le matin.',
   'A reminder 1 hour before, and the day before by email. Missing attestations: one email a day. A summary every morning.': 'Un rappel 1 h avant, et la veille par email. Attestations manquantes : un email par jour. Un résumé chaque matin.',
   'Reminders the day before (email), 1 hour and 30 minutes before. Missing attestations: an email every 4 hours. A summary every morning.': 'Des rappels la veille (par email), 1 h et 30 min avant. Attestations manquantes : un email toutes les 4 h. Un résumé chaque matin.',
+  'No support yet': 'Pas encore de support',
+  'Add an agenda, notes or documents to have them at hand during the meeting.': 'Ajoutez un ordre du jour, des notes ou des documents pour les avoir sous la main pendant la réunion.',
+  'Add the summary and the files of this session to have them at hand.': 'Ajoutez le résumé et les fichiers de cette séance pour les avoir sous la main.',
+  'Add a support': 'Ajouter un support',
+  'Create a new support for this appointment, or reuse one you already saved.': 'Créez un nouveau support pour ce rendez-vous, ou réutilisez-en un déjà enregistré.',
+  'New support': 'Nouveau support',
+  'Summary and files, saved in My courses': 'Résumé et fichiers, enregistrés dans Mes cours',
+  'Support added to this appointment': 'Support ajouté à ce rendez-vous',
 };

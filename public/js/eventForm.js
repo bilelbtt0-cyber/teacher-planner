@@ -823,7 +823,14 @@ function renderDrawer(e) {
         ${c.files.length ? `<div class="desc small">${icon('folder', 'sm')} ${esc(tn(c.files.length, '{n} file', '{n} files'))}</div>` : ''}
         <div class="actions"><button class="btn primary sm" data-support="${c.id}">${icon('book', 'sm')}${esc(t('Open the support'))}</button></div>
       </div>`
-    : '';
+    : // Classes, exams and meetings can all have a support (lesson notes, an agenda, documents…).
+      ['class', 'exam', 'meeting'].includes(e.kind) && e.status !== 'cancelled'
+      ? `<div class="support-box empty">
+          <div class="head">${icon('book')}<span>${esc(t('No support yet'))}</span></div>
+          <div class="desc">${esc(e.kind === 'meeting' ? t('Add an agenda, notes or documents to have them at hand during the meeting.') : t('Add the summary and the files of this session to have them at hand.'))}</div>
+          <div class="actions"><button class="btn soft sm" data-add-support>${icon('plus', 'sm')}${esc(t('Add a support'))}</button></div>
+        </div>`
+      : '';
 
   node.innerHTML = `
     <div class="drawer-head">
@@ -877,6 +884,50 @@ function renderDrawer(e) {
   node.querySelector('[data-support]')?.addEventListener('click', async () => {
     const { openCourseSupport } = await import('./courses.js');
     openCourseSupport(e.course.id);
+  });
+  node.querySelector('[data-add-support]')?.addEventListener('click', async () => {
+    const { openCourseForm } = await import('./courses.js');
+    // Reuse a saved support (the same course or meeting often comes back), or create a new one.
+    const saved = activeCourses();
+    let course = null;
+    if (saved.length) {
+      const sameKind = saved.filter((x) => x.kind === e.kind);
+      const others = saved.filter((x) => x.kind !== e.kind);
+      const choice = await chooseDialog({
+        title: t('Add a support'),
+        message: t('Create a new support for this appointment, or reuse one you already saved.'),
+        choices: [
+          { value: 'new', label: t('New support'), description: t('Summary and files, saved in My courses'), icon: 'plus' },
+          ...[...sameKind, ...others].slice(0, 8).map((x) => ({
+            value: String(x.id),
+            label: x.title,
+            description: [kindLabel(x.kind), categoryById(x.categoryId)?.name].filter(Boolean).join(' · '),
+            icon: 'book',
+          })),
+        ],
+      });
+      if (!choice) return;
+      if (choice !== 'new') course = courseById(Number(choice));
+    }
+    if (!course) {
+      course = await openCourseForm(null, {
+        title: e.title,
+        kind: e.kind,
+        categoryId: e.categoryId,
+        location: e.location,
+        durationMinutes: e.allDay ? 60 : Math.max(5, minutesBetween(e.start, e.end)),
+      });
+    }
+    if (!course) return;
+    try {
+      await api.put(`/api/events/${e.id}`, { ...editablePayload(e), courseId: course.id });
+      await loadCourses();
+      changed();
+      toast(t('Support added to this appointment'), { type: 'success' });
+      reloadDrawer();
+    } catch (err) {
+      errorToast(err);
+    }
   });
   node.querySelectorAll('[data-att]').forEach((b) =>
     b.addEventListener('click', async () => {
