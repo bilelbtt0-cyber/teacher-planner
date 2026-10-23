@@ -129,7 +129,7 @@ export async function render(root, params) {
             <span class="chip primary">${icon('clock')}${esc(t('{h} of teaching', { h: hoursLabel(totalHours) }))}</span>
             <span class="spacer"></span>
             <button class="btn sm" data-csv>${icon('download', 'sm')}${esc(t('Export CSV'))}</button>
-            <button class="btn sm" onclick="window.print()">${icon('printer', 'sm')}${esc(t('Print'))}</button></div>
+            <button class="btn sm" data-print>${icon('printer', 'sm')}${esc(t('Print'))}</button></div>
             ${[...groups.entries()]
               .map(
                 ([k, list]) => `<div class="result-month"><div class="head">${esc(fmtMonthYear(`${k}-01T00:00`))}<span class="badge">${list.length}</span>
@@ -213,6 +213,7 @@ export async function render(root, params) {
     openDocument(Number(r.dataset.doc));
   });
   on(root, 'click', '[data-csv]', exportCsv);
+  on(root, 'click', '[data-print]', () => window.print());
 
   const onParams = (e) => {
     if (e.detail.q !== undefined && e.detail.q !== f.q) {

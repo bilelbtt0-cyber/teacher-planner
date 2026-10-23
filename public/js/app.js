@@ -37,7 +37,7 @@ async function boot() {
     me = await api.get('/api/auth/me');
   } catch {
     app.innerHTML = `<div class="boot"><div class="empty">${icon('alertCircle', 'xl')}<h3>${esc(t('Cannot reach the app. Is it still running?'))}</h3>
-      <button class="btn primary" onclick="location.reload()">${esc(t('Try again'))}</button></div></div>`;
+      <button class="btn primary" data-reload>${esc(t('Try again'))}</button></div></div>`;
     return;
   }
   // Use the browser language until the user's own preference is loaded.
@@ -365,13 +365,18 @@ async function route(force) {
     console.error(err);
     if (token === renderToken) {
       view.innerHTML = `<div class="empty">${icon('alertCircle', 'xl')}<h3>${esc(t('This page could not be loaded.'))}</h3>
-        <p>${esc(t(err.message || ''))}</p><button class="btn primary" onclick="location.reload()">${esc(t('Reload'))}</button></div>`;
+        <p>${esc(t(err.message || ''))}</p><button class="btn primary" data-reload>${esc(t('Reload'))}</button></div>`;
     }
   }
   window.scrollTo(0, 0);
 }
 
 // ---------- Keyboard shortcuts ----------
+
+// Buttons on error screens (no inline handlers: the Content-Security-Policy forbids them).
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-reload]')) location.reload();
+});
 
 document.addEventListener('keydown', (e) => {
   if (!state.user || hasOpenModal() || e.ctrlKey || e.metaKey || e.altKey) return;

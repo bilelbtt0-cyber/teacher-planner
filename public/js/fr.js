@@ -1006,4 +1006,5 @@ export const FR = {
   'New support': 'Nouveau support',
   'Summary and files, saved in My courses': 'Résumé et fichiers, enregistrés dans Mes cours',
   'Support added to this appointment': 'Support ajouté à ce rendez-vous',
+  'This request was refused.': 'Cette demande a été refusée.',
 };

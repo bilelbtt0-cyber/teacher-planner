@@ -43,6 +43,8 @@ async function getWorker() {
         corePath: '/vendor/tesseract-core',
         langPath: '/vendor/tessdata',
         gzip: true,
+        // Load the worker straight from this site (not from a temporary blob), as the security policy expects.
+        workerBlobURL: false,
       });
     })().catch((err) => {
       workerPromise = null;

@@ -18,9 +18,58 @@ app.disable('x-powered-by');
 // Behind a hosting proxy (Render), trust its forwarded IP and https headers.
 app.set('trust proxy', process.env.TRUST_PROXY ? 1 : 'loopback');
 app.use(express.json({ limit: '1mb' }));
+
+// Content-Security-Policy for the pages: only this site's own scripts can run, so even text that
+// slipped through escaping could not execute. Inline styles stay allowed (the interface uses them);
+// blob:/data: are needed for scans, previews and PDF export; wasm for the text reader.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' blob: data:",
+  "worker-src 'self' blob:",
+  "frame-src 'self' blob:",
+  "media-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'self'",
+].join('; ');
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
+  // Never shown inside another website (clickjacking); its own previews may still frame it.
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=(), payment=()');
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  // The policy applies to pages; files (PDFs, images) are served as they are.
+  if (!req.path.startsWith('/api/') && !req.path.startsWith('/vendor/')) res.setHeader('Content-Security-Policy', CSP);
+  next();
+});
+
+// Requests that change data must come from this site, in a format a forged cross-site form cannot
+// produce (JSON or file upload). A missing body is treated as empty instead of crashing.
+app.use('/api', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const origin = req.headers.origin;
+    if (origin) {
+      let sameSite = false;
+      try {
+        sameSite = new URL(origin).host === (req.headers['x-forwarded-host'] || req.headers.host);
+      } catch {
+        /* malformed origin */
+      }
+      if (!sameSite) return res.status(403).json({ error: 'This request was refused.' });
+    }
+    const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (type === 'text/plain' || type === 'application/x-www-form-urlencoded') {
+      return res.status(415).json({ error: 'This request was refused.' });
+    }
+  }
+  if (req.body === undefined) req.body = {};
   next();
 });
 
