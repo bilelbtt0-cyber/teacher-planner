@@ -102,6 +102,8 @@ function analyse(data) {
   const emptySummary = timed.map((e) => courseById(e.courseId)).find((c) => c && !c.summary.trim());
   const tightTravel = gaps.find((g) => g.prev.categoryId && g.next.categoryId && g.prev.categoryId !== g.next.categoryId && g.minutes < 45);
 
+  const holidayIn = data.nextHoliday ? Math.round(minutesBetween(`${today}T00:00`, `${data.nextHoliday.start}T00:00`) / 1440) : 0;
+
   let phase = 'morning';
   if (timed.length && first.start <= now) phase = last.end <= now ? 'evening' : 'day';
 
@@ -139,6 +141,11 @@ function analyse(data) {
     next: coming[0],
     onBreak: !current && coming.length && done.length ? minutesBetween(now, coming[0].start) : 0,
     tomorrowEvents,
+    exam: timed.find((e) => e.kind === 'exam'),
+    meeting: timed.find((e) => e.kind === 'meeting'),
+    nextHoliday: data.nextHoliday?.name || '',
+    holidayIn,
+    month: Number(today.slice(5, 7)),
     firstName: (state.user?.name || '').split(' ')[0],
   };
 }
@@ -169,6 +176,16 @@ const OPENINGS = [
   { id: 'he1', when: (c) => c.heavy && c.n > 1, fr: (c) => `Grosse journée aujourd'hui : ${c.hours} de cours, de ${c.firstTime} à ${c.lastTime}. On y va pas à pas.`, en: (c) => `A big day today: ${c.hours} of teaching, from ${c.firstTime} to ${c.lastTime}. One step at a time.` },
   { id: 'he2', when: (c) => c.heavy && c.n > 1, fr: (c) => `${cap(c.nWord)} cours au programme, ${c.hours} au total. Gardez un peu d'énergie pour le dernier.`, en: (c) => `${cap(c.nWord)} classes on the programme, ${c.hours} in total. Keep a little energy for the last one.` },
   { id: 'he3', when: (c) => c.heavy && c.n > 1, fr: (c) => `Une longue journée vous attend, jusqu'à ${c.lastTime}. Ménagez-vous entre les cours.`, en: (c) => `A long day ahead, until ${c.lastTime}. Go easy on yourself between classes.` },
+  { id: 'he4', when: (c) => c.heavy && c.n > 1, fr: (c) => `Journée dense : ${c.nWord} rendez-vous entre ${c.firstTime} et ${c.lastTime}. Gardez votre rythme, pas celui de l'horloge.`, en: (c) => `A packed day: ${c.nWord} appointments between ${c.firstTime} and ${c.lastTime}. Keep your own pace, not the clock's.` },
+  { id: 'he5', when: (c) => c.heavy && c.n > 1, fr: (c) => `Aujourd'hui, ${c.hours} de cours. C'est beaucoup, alors on ne cherche pas la perfection : on cherche à bien finir.`, en: (c) => `Today, ${c.hours} of teaching. That's a lot, so the goal isn't perfection: it's finishing well.` },
+  // More versions for the other days, so mornings don't sound alike.
+  { id: 'li4', when: (c) => c.n === 1, fr: (c) => `Juste ${c.first.title} aujourd'hui, de ${c.firstTime} à ${c.lastTime}. Le genre de journée qui laisse respirer.`, en: (c) => `Just ${c.first.title} today, from ${c.firstTime} to ${c.lastTime}. The kind of day that lets you breathe.` },
+  { id: 'li5', when: (c) => c.light && c.n > 1, fr: (c) => `Une journée tranquille : ${c.nWord} cours, et vous aurez terminé vers ${c.lastTime}.`, en: (c) => `A quiet day: ${c.nWord} classes, and you'll be done around ${c.lastTime}.` },
+  { id: 'no5', when: (c) => c.n > 1 && !c.light && !c.heavy, fr: (c) => `Bonjour${c.firstName ? ` ${c.firstName}` : ''} ! ${cap(c.nWord)} cours vous attendent, le premier à ${c.firstTime}.`, en: (c) => `Good morning${c.firstName ? ` ${c.firstName}` : ''}! ${cap(c.nWord)} classes are waiting for you, the first at ${c.firstTime}.` },
+  { id: 'no6', when: (c) => c.n > 1 && !c.light && !c.heavy, fr: (c) => `Une journée classique : ${c.first.title} pour commencer à ${c.firstTime}, ${c.last.title} pour finir vers ${c.lastTime}.`, en: (c) => `A typical day: ${c.first.title} to start at ${c.firstTime}, ${c.last.title} to finish around ${c.lastTime}.` },
+  { id: 'we4', when: (c) => c.weekend && !c.holiday, fr: () => `Pas de sonnerie aujourd'hui. Une promenade, un bon repas, un livre : la semaine prochaine vous remerciera.`, en: () => `No school bell today. A walk, a good meal, a book: next week will thank you.` },
+  { id: 'hol3', when: (c) => c.holiday, fr: () => `Les élèves sont en vacances, vous aussi. Pas d'agenda à surveiller aujourd'hui.`, en: () => `The students are on holiday, and so are you. No planner to watch today.` },
+  { id: 'fr4', when: (c) => !c.n && !c.weekend && !c.holiday, fr: () => `Rien dans l'agenda aujourd'hui. Gardez-en une partie pour vous, même si la liste de choses à faire est longue.`, en: () => `Nothing in the planner today. Keep part of it for yourself, even if the to-do list is long.` },
 ];
 
 // At most one: how this day sits in the week.
@@ -179,10 +196,53 @@ const CONTEXT = [
   { id: 'cl2', when: (c) => c.lastDayOfWeek, fr: () => `C'est la dernière ligne droite de la semaine.`, en: () => `It's the home stretch of the week.` },
   { id: 'cm1', when: (c) => c.monday, fr: () => `Nouvelle semaine, nouvelle page.`, en: () => `New week, new page.` },
   { id: 'cm2', when: (c) => c.monday, fr: () => `Début de semaine : on démarre en douceur.`, en: () => `Start of the week: ease into it.` },
+  { id: 'cm3', when: (c) => c.monday, fr: () => `Lundi : pas besoin de tout régler aujourd'hui, la semaine est encore longue.`, en: () => `Monday: no need to sort everything out today; the week is still long.` },
+  { id: 'cl3', when: (c) => c.lastDayOfWeek, fr: () => `Plus que cette journée avant une vraie coupure. Vous y êtes presque.`, en: () => `Just this day left before a real break. You're nearly there.` },
+  { id: 'cy3', when: (c) => c.yesterdayHeavy && c.n, fr: () => `Hier vous a demandé beaucoup d'énergie : aujourd'hui, l'essentiel suffira.`, en: () => `Yesterday took a lot of energy: today, the essentials will do.` },
+  // Holidays coming soon.
+  { id: 'hs1', when: (c) => c.n && c.nextHoliday && c.holidayIn > 1, fr: (c) => `Plus que ${c.holidayInWord} jours avant « ${c.nextHoliday} ».`, en: (c) => `Only ${c.holidayInWord} days until “${c.nextHoliday}”.` },
+  { id: 'hs2', when: (c) => c.n && c.nextHoliday && c.holidayIn > 1, fr: (c) => `« ${c.nextHoliday} » approche : encore ${c.holidayInWord} jours, et une pause bien méritée.`, en: (c) => `“${c.nextHoliday}” is coming: ${c.holidayInWord} more days, then a well-earned break.` },
+  { id: 'hs3', when: (c) => c.n && c.nextHoliday && c.holidayIn === 1, fr: (c) => `Demain commence « ${c.nextHoliday} ». Dernier effort !`, en: (c) => `“${c.nextHoliday}” starts tomorrow. One last push!` },
+];
+
+// At most one, on some days: the time of year (Tunisian school calendar).
+const SEASON = [
+  { id: 'se_sep1', when: (c) => c.month === 9, fr: () => `C'est la rentrée : les premières semaines donnent le ton, mais rien ne presse. Les habitudes se prennent petit à petit.`, en: () => `It's the start of the school year: the first weeks set the tone, but there's no rush. Habits come little by little.` },
+  { id: 'se_sep2', when: (c) => c.month === 9, fr: () => `Nouvelle année scolaire, nouveaux visages. Apprendre les prénoms prend du temps, et c'est normal.`, en: () => `New school year, new faces. Learning names takes time, and that's normal.` },
+  { id: 'se_oct', when: (c) => c.month === 10, fr: () => `Octobre : les classes ont trouvé leur rythme, et vous aussi.`, en: () => `October: the classes have found their rhythm, and so have you.` },
+  { id: 'se_nov', when: (c) => c.month === 11, fr: () => `Les journées raccourcissent : profitez de la lumière du midi, même cinq minutes.`, en: () => `The days are getting shorter: enjoy the midday light, even for five minutes.` },
+  { id: 'se_dec', when: (c) => c.month === 12, fr: () => `Fin du premier trimestre en vue : les copies s'accumulent, mais les vacances aussi approchent.`, en: () => `End of the first term in sight: marking piles up, but the holidays are getting closer too.` },
+  { id: 'se_win', when: (c) => c.month === 1 || c.month === 2, fr: () => `Il fait frais le matin : une écharpe dans le sac, et un thé chaud entre deux cours.`, en: () => `Mornings are chilly: a scarf in your bag, and a hot tea between classes.` },
+  { id: 'se_mar', when: (c) => c.month === 3, fr: () => `Le printemps arrive : un peu plus de lumière, un peu plus d'énergie.`, en: () => `Spring is coming: a little more light, a little more energy.` },
+  { id: 'se_apr', when: (c) => c.month === 4 || c.month === 5, fr: () => `Le dernier trimestre est souvent le plus court : chaque semaine compte, mais pas au point d'oublier de respirer.`, en: () => `The last term is often the shortest: every week counts, but not so much that you forget to breathe.` },
+  { id: 'se_jun', when: (c) => c.month === 6, fr: () => `Période d'examens : les élèves sont tendus, vous aussi peut-être. Un mot rassurant fait souvent plus qu'une révision de plus.`, en: () => `Exam season: students are tense, and maybe you are too. A reassuring word often helps more than one more revision.` },
+  { id: 'se_sum', when: (c) => c.month === 7 || c.month === 8, fr: () => `L'été : le bon moment pour recharger les batteries, loin des emplois du temps.`, en: () => `Summer: the right time to recharge, far from timetables.` },
+];
+
+// Sometimes, a small idea for the day.
+const TIPS = [
+  { id: 'tp1', when: (c) => c.n, fr: () => `Petite idée : commencez un cours par une question ouverte, juste pour réveiller la classe.`, en: () => `A small idea: start a class with an open question, just to wake the room up.` },
+  { id: 'tp2', when: (c) => c.n, fr: () => `Petite idée : terminez un cours en demandant à un élève de résumer en une phrase ce qu'il a retenu.`, en: () => `A small idea: end a class by asking one student to sum up what they learned in one sentence.` },
+  { id: 'tp3', when: (c) => c.n, fr: () => `Petite idée : un compliment précis à un élève discret peut changer sa semaine.`, en: () => `A small idea: a specific compliment to a quiet student can change their week.` },
+  { id: 'tp4', when: (c) => c.n, fr: () => `Petite idée : notez ce soir, en une ligne, ce qui a bien marché aujourd'hui. Ça sert pour l'année prochaine.`, en: () => `A small idea: tonight, write down in one line what worked well today. It helps next year.` },
+  { id: 'tp5', when: (c) => c.n, fr: () => `Petite idée : parlez un peu moins fort que d'habitude. Souvent, la classe baisse le ton avec vous.`, en: () => `A small idea: speak a little more softly than usual. The class often lowers its voice with you.` },
+  { id: 'tp6', when: (c) => c.n, fr: () => `Petite idée : avant d'entrer en classe, trois respirations lentes. Personne ne le verra, et ça change tout.`, en: () => `A small idea: before walking into class, three slow breaths. No one will notice, and it changes everything.` },
+  { id: 'tp7', when: (c) => c.n, fr: () => `Petite idée : laissez cinq minutes à la fin pour les questions. Ce sont souvent les meilleures.`, en: () => `A small idea: leave five minutes at the end for questions. They're often the best ones.` },
+  { id: 'tp8', when: (c) => c.n, fr: () => `Petite idée : un exemple tiré de la vie de tous les jours rend une notion difficile plus simple.`, en: () => `A small idea: an everyday example makes a difficult idea simpler.` },
+  { id: 'tp9', when: (c) => c.n, fr: () => `Petite idée : buvez un verre d'eau à chaque pause. La voix est votre premier outil de travail.`, en: () => `A small idea: drink a glass of water at every break. Your voice is your first working tool.` },
+  { id: 'tp10', when: (c) => c.n, fr: () => `Petite idée : si un cours ne se passe pas comme prévu, ce n'est pas un échec : c'est une information pour le suivant.`, en: () => `A small idea: if a class doesn't go to plan, it isn't a failure: it's information for the next one.` },
+  { id: 'tp11', when: (c) => !c.n, fr: () => `Petite idée : une heure pour préparer la semaine, pas plus. Le reste de la journée est pour vous.`, en: () => `A small idea: one hour to prepare the week, no more. The rest of the day is yours.` },
+  { id: 'tp12', when: (c) => !c.n, fr: () => `Petite idée : appelez quelqu'un que vous n'avez pas eu le temps de voir cette semaine.`, en: () => `A small idea: call someone you haven't had time to see this week.` },
+  { id: 'tp13', when: (c) => !c.n, fr: () => `Petite idée : sortez marcher vingt minutes, sans téléphone. L'esprit se range tout seul.`, en: () => `A small idea: go for a twenty-minute walk, without your phone. Your mind tidies itself.` },
+  { id: 'tp14', when: (c) => !c.n, fr: () => `Petite idée : profitez-en pour ranger vos attestations reçues dans Mes documents. Cinq minutes, et c'est fait.`, en: () => `A small idea: use the time to file your received attestations in My documents. Five minutes and it's done.` },
 ];
 
 // Up to two, in this order of importance: practical advice drawn from the schedule.
 const DETAILS = [
+  { id: 'ex1', when: (c) => c.exam, fr: (c) => `Examen aujourd'hui : ${c.exam.title}, à ${c.examTime}. Vérifiez que vous avez assez de sujets et de copies.`, en: (c) => `Exam today: ${c.exam.title}, at ${c.examTime}. Check you have enough papers and answer sheets.` },
+  { id: 'ex2', when: (c) => c.exam, fr: (c) => `${c.exam.title} à ${c.examTime} : un mot calme au début de l'épreuve, et les élèves partiront plus sereins.`, en: (c) => `${c.exam.title} at ${c.examTime}: a calm word at the start, and the students will begin more at ease.` },
+  { id: 'me1', when: (c) => c.meeting, fr: (c) => `Réunion à ${c.meetingTime} : ${c.meeting.title}. Notez deux ou trois points à dire avant d'y aller.`, en: (c) => `Meeting at ${c.meetingTime}: ${c.meeting.title}. Jot down two or three points to raise before you go.` },
+  { id: 'me2', when: (c) => c.meeting, fr: (c) => `N'oubliez pas ${c.meeting.title} à ${c.meetingTime}. Si un support y est joint, il est dans le rendez-vous.`, en: (c) => `Don't forget ${c.meeting.title} at ${c.meetingTime}. If a support is attached, it's in the appointment.` },
   { id: 'at1', when: (c) => c.attToday, fr: (c) => `À la fin de ${c.attToday.title}, pensez à demander l'attestation : une minute, et c'est réglé.`, en: (c) => `At the end of ${c.attToday.title}, remember to ask for the attestation: one minute and it's done.` },
   { id: 'at2', when: (c) => c.attToday, fr: (c) => `Petite chose à ne pas oublier : l'attestation de ${c.attToday.title}, à demander sur place.`, en: (c) => `One small thing not to forget: the attestation for ${c.attToday.title}, to ask for on the spot.` },
   { id: 'bb1', when: (c) => c.backToBack, fr: (c) => `Entre ${c.bbFrom} et ${c.bbTo}, les cours s'enchaînent sans pause : gardez une bouteille d'eau à portée de main.`, en: (c) => `Between ${c.bbFrom} and ${c.bbTo}, classes follow each other with no break: keep a bottle of water close by.` },
@@ -200,6 +260,10 @@ const DETAILS = [
   { id: 'su1', when: (c) => c.emptySummary, fr: (c) => `Le résumé de « ${c.emptySummary.title} » est encore vide. Deux minutes pour noter les points clés, et vous l'aurez sous les yeux en classe.`, en: (c) => `The summary of “${c.emptySummary.title}” is still empty. Two minutes to note the key points, and you'll have it in front of you in class.` },
   { id: 'ov1', when: (c) => c.overdue === 1, fr: () => `Une attestation attend encore d'être récupérée. Si vous passez par là, c'est l'occasion.`, en: () => `One attestation is still waiting to be collected. If you're passing by, it's a good chance.` },
   { id: 'ov2', when: (c) => c.overdue > 1, fr: (c) => `${cap(c.overdueWord)} attestations sont encore à récupérer. Une à la fois, sans stress.`, en: (c) => `${cap(c.overdueWord)} attestations are still to collect. One at a time, no stress.` },
+  { id: 'ov3', when: (c) => c.overdue > 1, fr: (c) => `Il reste ${c.overdueWord} attestations à demander. Commencez par la plus ancienne : elle est en haut de la page Attestations.`, en: (c) => `${cap(c.overdueWord)} attestations are left to ask for. Start with the oldest: it's at the top of the Attestations page.` },
+  { id: 'br3', when: (c) => c.longBreak, fr: (c) => `Grande pause de ${c.breakLen} à partir de ${c.breakFrom}. Un vrai repas assis vaut mieux que des copies corrigées debout.`, en: (c) => `A long break of ${c.breakLen} from ${c.breakFrom}. A proper seated meal beats marking on your feet.` },
+  { id: 'la3', when: (c) => c.late, fr: (c) => `Fin des cours à ${c.lastTime} : gardez un en-cas pour la fin d'après-midi.`, en: (c) => `Classes end at ${c.lastTime}: keep a snack for late afternoon.` },
+  { id: 'ea3', when: (c) => c.early, fr: (c) => `Départ matinal (${c.firstTime}) : préparez votre sac la veille, le matin sera plus léger.`, en: (c) => `Early start (${c.firstTime}): pack your bag the night before and the morning will feel lighter.` },
 ];
 
 const CLOSINGS = [
@@ -212,6 +276,11 @@ const CLOSINGS = [
   { id: 'ch2', when: (c) => c.heavy, fr: () => `Une journée chargée reste une journée comme les autres, juste un peu plus longue. Vous y arriverez.`, en: () => `A busy day is still a day like any other, just a little longer. You'll get there.` },
   { id: 'cf1', when: (c) => !c.n, fr: () => `Profitez-en bien.`, en: () => `Enjoy it.` },
   { id: 'cf2', when: (c) => !c.n, fr: () => `Le repos fait aussi partie du métier.`, en: () => `Rest is part of the job too.` },
+  { id: 'cf3', when: (c) => !c.n, fr: () => `À demain, reposée et prête.`, en: () => `See you tomorrow, rested and ready.` },
+  { id: 'cg6', when: (c) => c.n, fr: () => `Ce que vous semez aujourd'hui, vos élèves le récolteront longtemps.`, en: () => `What you sow today, your students will harvest for a long time.` },
+  { id: 'cg7', when: (c) => c.n && !c.heavy, fr: () => `Souriez en entrant en classe : c'est contagieux.`, en: () => `Smile as you walk into class: it's contagious.` },
+  { id: 'cg8', when: (c) => c.n, fr: (c) => `On croit en vous${c.firstName ? `, ${c.firstName}` : ''}.`, en: (c) => `We believe in you${c.firstName ? `, ${c.firstName}` : ''}.` },
+  { id: 'ch3', when: (c) => c.heavy, fr: () => `Respirez entre deux cours : la journée se gagne une heure à la fois.`, en: () => `Breathe between classes: the day is won one hour at a time.` },
 ];
 
 // During the day: where she is now.
@@ -221,6 +290,10 @@ const DAY = [
   { id: 'dc1', when: (c) => c.current && !c.next, fr: (c) => `Dernier cours de la journée en ce moment : ${c.current.title}. Le plus dur est fait.`, en: (c) => `Last class of the day right now: ${c.current.title}. The hardest part is done.` },
   { id: 'db1', when: (c) => c.onBreak >= 20, fr: (c) => `C'est la pause jusqu'à ${c.nextTime}. Asseyez-vous, buvez un verre d'eau, et ne pensez pas encore au cours suivant.`, en: (c) => `Break until ${c.nextTime}. Sit down, drink some water, and don't think about the next class just yet.` },
   { id: 'db2', when: (c) => c.onBreak >= 20, fr: (c) => `${cap(c.breakNowLen)} avant ${c.next.title} : de quoi souffler un peu.`, en: (c) => `${cap(c.breakNowLen)} before ${c.next.title}: time to catch your breath.` },
+  { id: 'dp3', when: (c) => c.next && c.done.length, fr: (c) => `La journée avance bien. Prochaine étape : ${c.next.title} à ${c.nextTime}.`, en: (c) => `The day is going well. Next step: ${c.next.title} at ${c.nextTime}.` },
+  { id: 'dp4', when: (c) => c.current && c.next, fr: (c) => `En ce moment : ${c.current.title}. Ensuite, ${c.next.title} à ${c.nextTime}.`, en: (c) => `Right now: ${c.current.title}. Then ${c.next.title} at ${c.nextTime}.` },
+  { id: 'dc2', when: (c) => c.current && !c.next, fr: (c) => `${c.current.title}, et ce sera tout pour aujourd'hui. Vous y êtes presque.`, en: (c) => `${c.current.title}, and that's all for today. You're nearly there.` },
+  { id: 'db3', when: (c) => c.onBreak >= 20, fr: (c) => `Pause jusqu'à ${c.nextTime} : sortez prendre l'air quelques minutes si vous pouvez.`, en: (c) => `Break until ${c.nextTime}: step outside for a few minutes if you can.` },
   { id: 'da1', when: (c) => c.attToday && c.attToday.end <= c.now, fr: (c) => `Avez-vous pu demander l'attestation de ${c.attToday.title} ? Si c'est fait, marquez-la comme reçue.`, en: (c) => `Did you manage to ask for the attestation for ${c.attToday.title}? If so, mark it as received.` },
 ];
 
@@ -230,17 +303,24 @@ const EVENING = [
   { id: 'ev2', when: () => true, fr: (c) => `Journée bouclée, ${c.nWord} ${c.n > 1 ? 'cours donnés' : 'cours donné'}. Le reste de la soirée est à vous.`, en: (c) => `Day done, ${c.nWord} ${c.n > 1 ? 'classes' : 'class'} given. The rest of the evening is yours.` },
   { id: 'ev3', when: (c) => c.heavy, fr: (c) => `Une longue journée derrière vous${c.firstName ? `, ${c.firstName}` : ''}. Ce que vous avez fait aujourd'hui compte vraiment.`, en: (c) => `A long day behind you${c.firstName ? `, ${c.firstName}` : ''}. What you did today really matters.` },
   { id: 'ev4', when: (c) => !c.heavy, fr: () => `Les cours sont finis. Posez le sac, la journée a été bien remplie.`, en: () => `Classes are over. Put the bag down: it was a full day.` },
+  { id: 'ev5', when: () => true, fr: (c) => `Mission accomplie${c.firstName ? `, ${c.firstName}` : ''} : ${c.nWord} cours aujourd'hui, de ${c.firstTime} à ${c.lastTime}.`, en: (c) => `Mission accomplished${c.firstName ? `, ${c.firstName}` : ''}: ${c.nWord} ${c.n > 1 ? 'classes' : 'class'} today, from ${c.firstTime} to ${c.lastTime}.` },
+  { id: 'ev6', when: (c) => c.exam, fr: (c) => `L'examen ${c.exam.title} est passé. Les copies peuvent attendre demain matin.`, en: (c) => `The ${c.exam.title} exam is done. The papers can wait until tomorrow morning.` },
 ];
 const EVENING_AFTER = [
   { id: 'ea_att', when: (c) => c.attToday, fr: (c) => `Avez-vous pu récupérer l'attestation de ${c.attToday.title} ? Si oui, un clic pour la marquer comme reçue.`, en: (c) => `Did you get the attestation for ${c.attToday.title}? If so, one click to mark it as received.` },
   { id: 'tm1', when: (c) => c.tomorrowEvents.length, fr: (c) => `Demain, premier cours à ${c.tomorrowTime} (${c.tomorrowEvents[0].title}).`, en: (c) => `Tomorrow, first class at ${c.tomorrowTime} (${c.tomorrowEvents[0].title}).` },
   { id: 'tm2', when: (c) => c.tomorrowEvents.length, fr: (c) => `Demain, ça reprend à ${c.tomorrowTime}. Une bonne nuit, et ce sera parfait.`, en: (c) => `Tomorrow it starts again at ${c.tomorrowTime}. A good night's sleep, and it'll be perfect.` },
   { id: 'tn1', when: (c) => !c.tomorrowEvents.length, fr: () => `Pas de cours demain : vous pouvez éteindre le réveil.`, en: () => `No classes tomorrow: you can switch off the alarm.` },
+  { id: 'tm3', when: (c) => c.tomorrowEvents.length > 1, fr: (c) => `Demain, ${c.tomorrowWord} rendez-vous, le premier à ${c.tomorrowTime}. Un coup d'œil à l'agenda, et vous serez prête.`, en: (c) => `Tomorrow, ${c.tomorrowWord} appointments, the first at ${c.tomorrowTime}. A glance at the planner and you'll be ready.` },
+  { id: 'tn2', when: (c) => !c.tomorrowEvents.length, fr: () => `Rien de prévu demain : une grasse matinée n'a jamais fait de mal.`, en: () => `Nothing planned tomorrow: a lie-in never hurt anyone.` },
 ];
 const EVENING_CLOSE = [
   { id: 'ec1', fr: () => `Bonne soirée, vous l'avez bien méritée.`, en: () => `Have a good evening; you've earned it.` },
   { id: 'ec2', fr: () => `Ce soir, c'est repos.`, en: () => `Tonight is for resting.` },
   { id: 'ec3', fr: () => `Prenez un moment pour vous ce soir.`, en: () => `Take a moment for yourself tonight.` },
+  { id: 'ec4', fr: () => `Éteignez les écrans un peu plus tôt ce soir : le sommeil fait la moitié du travail.`, en: () => `Switch off the screens a little earlier tonight: sleep does half the work.` },
+  { id: 'ec5', fr: () => `Fière de vous ? Vous devriez l'être.`, en: () => `Proud of yourself? You should be.` },
+  { id: 'ec6', fr: () => `Bonne soirée, et à demain.`, en: () => `Have a good evening, and see you tomorrow.` },
 ];
 
 const QUOTES = {
@@ -250,6 +330,11 @@ const QUOTES = {
     { id: 'q_joubert', fr: ['Enseigner, c’est apprendre deux fois.', 'Joseph Joubert'], en: ['To teach is to learn twice.', 'Joseph Joubert'] },
     { id: 'q_harf', fr: ['Celui qui m’a appris une lettre, je deviens son serviteur.', 'Proverbe arabe'], en: ['Whoever taught me a single letter, I become their servant.', 'Arab proverb'] },
     { id: 'q_coeur', fr: ['On ne voit bien qu’avec le cœur.', 'Antoine de Saint-Exupéry'], en: ['One sees clearly only with the heart.', 'Antoine de Saint-Exupéry'] },
+    { id: 'q_plutarque', fr: ['L’esprit n’est pas un vase qu’on remplit, mais un feu qu’on allume.', 'Plutarque'], en: ['The mind is not a vessel to be filled, but a fire to be kindled.', 'Plutarch'] },
+    { id: 'q_montaigne', fr: ['Mieux vaut une tête bien faite qu’une tête bien pleine.', 'Montaigne'], en: ['Better a well-made head than a well-filled one.', 'Montaigne'] },
+    { id: 'q_hugo', fr: ['Celui qui ouvre une porte d’école ferme une prison.', 'Victor Hugo'], en: ['He who opens a school door closes a prison.', 'Victor Hugo'] },
+    { id: 'q_adams', fr: ['Un enseignant touche l’éternité : il ne peut jamais dire où s’arrête son influence.', 'Henry Adams'], en: ['A teacher affects eternity; he can never tell where his influence stops.', 'Henry Adams'] },
+    { id: 'q_village', fr: ['Il faut tout un village pour élever un enfant.', 'Proverbe africain'], en: ['It takes a village to raise a child.', 'African proverb'] },
   ],
   patience: [
     { id: 'q_lafontaine1', fr: ['Patience et longueur de temps font plus que force ni que rage.', 'Jean de La Fontaine'], en: ['Patience and time do more than strength or rage.', 'Jean de La Fontaine'] },
@@ -257,11 +342,17 @@ const QUOTES = {
     { id: 'q_seneque', fr: ['Ce n’est pas parce que les choses sont difficiles que nous n’osons pas, c’est parce que nous n’osons pas qu’elles sont difficiles.', 'Sénèque'], en: ['It is not because things are difficult that we do not dare; it is because we do not dare that they are difficult.', 'Seneca'] },
     { id: 'q_einstein', fr: ['La vie, c’est comme une bicyclette : il faut avancer pour ne pas perdre l’équilibre.', 'Albert Einstein'], en: ['Life is like riding a bicycle. To keep your balance, you must keep moving.', 'Albert Einstein'] },
     { id: 'q_oiseau', fr: ['Petit à petit, l’oiseau fait son nid.', 'Proverbe'], en: ['Little by little, the bird builds its nest.', 'French proverb'] },
+    { id: 'q_sabr', fr: ['La patience est la clé du soulagement.', 'Proverbe arabe'], en: ['Patience is the key to relief.', 'Arab proverb'] },
+    { id: 'q_laotseu', fr: ['Un voyage de mille lieues commence toujours par un premier pas.', 'Lao Tseu'], en: ['A journey of a thousand miles begins with a single step.', 'Lao Tzu'] },
+    { id: 'q_confucius', fr: ['Peu importe que tu ailles lentement, du moment que tu ne t’arrêtes pas.', 'Confucius'], en: ['It does not matter how slowly you go, as long as you do not stop.', 'Confucius'] },
+    { id: 'q_rousseau', fr: ['La patience est amère, mais son fruit est doux.', 'Jean-Jacques Rousseau'], en: ['Patience is bitter, but its fruit is sweet.', 'Jean-Jacques Rousseau'] },
   ],
   rest: [
     { id: 'q_racine', fr: ['Qui veut voyager loin ménage sa monture.', 'Jean Racine'], en: ['Whoever wants to travel far takes care of their horse.', 'Jean Racine'] },
     { id: 'q_lubbock', fr: ['Le repos n’est pas l’oisiveté.', 'John Lubbock'], en: ['Rest is not idleness.', 'John Lubbock'] },
     { id: 'q_voltaire', fr: ['Il faut cultiver notre jardin.', 'Voltaire'], en: ['We must cultivate our garden.', 'Voltaire'] },
+    { id: 'q_ovide', fr: ['Ce qui n’a pas de repos ne dure pas.', 'Ovide'], en: ['What lacks rest does not last.', 'Ovid'] },
+    { id: 'q_piano', fr: ['Qui va doucement va sûrement, et qui va sûrement va loin.', 'Proverbe italien'], en: ['Who goes slowly goes safely, and who goes safely goes far.', 'Italian proverb'] },
   ],
 };
 
@@ -291,6 +382,10 @@ function words(c, lang) {
     doneWord: num(c.done.length, lang),
     comingWord: num(c.coming.length, lang),
     tomorrowTime: t(c.tomorrowEvents[0], 'start'),
+    tomorrowWord: num(c.tomorrowEvents.length, lang),
+    examTime: t(c.exam, 'start'),
+    meetingTime: t(c.meeting, 'start'),
+    holidayInWord: num(c.holidayIn, lang),
   };
 }
 
@@ -306,7 +401,7 @@ function pickOne(pool, c, rand, recent) {
 
 // The same advice every morning would feel automatic: a topic rests a few days after being given,
 // except the reminders she must act on today.
-const ALWAYS = ['at', 'tr'];
+const ALWAYS = ['ex', 'me', 'at', 'tr'];
 
 function choose(c, rand, recent, restingGroups) {
   const ids = [];
@@ -314,8 +409,10 @@ function choose(c, rand, recent, restingGroups) {
   if (c.phase === 'morning' || !c.n) {
     add(pickOne(OPENINGS, c, rand, recent));
     if (c.n) add(pickOne(CONTEXT, c, rand, recent));
+    // The time of year, one morning in three.
+    if (rand() < 0.35) add(pickOne(SEASON, c, rand, recent));
     // Up to two practical details, the most important situations first.
-    const groups = ['at', 'bb', 'lu', 'tr', 'br', 'ea', 'la', 'mi', 'su', 'ov'];
+    const groups = ['ex', 'me', 'at', 'bb', 'lu', 'tr', 'br', 'ea', 'la', 'mi', 'su', 'ov'];
     let details = 0;
     for (const g of groups) {
       if (details >= 2) break;
@@ -326,6 +423,8 @@ function choose(c, rand, recent, restingGroups) {
         details++;
       }
     }
+    // A small idea, most days, when the note isn't already full of advice.
+    if (details < 2 && rand() < 0.6) add(pickOne(TIPS, c, rand, recent));
     add(pickOne(CLOSINGS, c, rand, recent));
     // A quotation most mornings, not every single day.
     if (rand() < 0.75) {
@@ -346,7 +445,7 @@ function choose(c, rand, recent, restingGroups) {
   return ids;
 }
 
-const ALL = [...OPENINGS, ...CONTEXT, ...DETAILS, ...CLOSINGS, ...DAY, ...EVENING, ...EVENING_AFTER, ...EVENING_CLOSE];
+const ALL = [...OPENINGS, ...CONTEXT, ...SEASON, ...TIPS, ...DETAILS, ...CLOSINGS, ...DAY, ...EVENING, ...EVENING_AFTER, ...EVENING_CLOSE];
 const QUOTE_BY_ID = Object.fromEntries(Object.values(QUOTES).flat().map((q) => [q.id, q]));
 const PHRASE_BY_ID = Object.fromEntries(ALL.map((p) => [p.id, p]));
 
@@ -375,15 +474,21 @@ export function composeDayNote(data) {
   }
   const lines = [];
   let quote = null;
+  let tip = null;
   for (const id of ids) {
     if (QUOTE_BY_ID[id]) {
       const [text, author] = QUOTE_BY_ID[id][lang];
       quote = { text, author };
+    } else if (TIPS.some((x) => x.id === id)) {
+      // "Petite idée : …" is shown on its own line, with the label set apart.
+      const full = PHRASE_BY_ID[id][lang](w);
+      const cut = full.indexOf(': ') + 1;
+      tip = { label: full.slice(0, cut), text: cap(full.slice(cut + 1)) };
     } else lines.push(PHRASE_BY_ID[id][lang](w));
   }
   // The last sentence is the warm word that closes the note; the rest is about the day.
   const closing = lines.length > 1 ? lines.pop() : '';
-  return { key, ids, isNew, phase: c.n ? c.phase : 'free', body: lines.join(' '), closing, quote };
+  return { key, ids, isNew, phase: c.n ? c.phase : 'free', body: lines.join(' '), tip, closing, quote };
 }
 
 /** Remembers today's choice (stable all day) and what was read (to avoid repeating it). */

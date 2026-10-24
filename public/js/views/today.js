@@ -24,6 +24,7 @@ function noteHtml(note, folded) {
   return `<section class="day-note phase-${note.phase}">
       <div class="dn-head"><span class="dn-ic">${icon(look.icon)}</span><span class="dn-label">${esc(t(look.label))}</span></div>
       <p class="dn-body">${esc(note.body)}</p>
+      ${note.tip ? `<p class="dn-tip">${icon('sparkles', 'sm')}<span><strong>${esc(note.tip.label)}</strong> ${esc(note.tip.text)}</span></p>` : ''}
       ${note.closing ? `<p class="dn-closing">${esc(note.closing)}</p>` : ''}
       ${note.quote ? `<blockquote class="dn-quote">${fr ? '« ' : '“'}${esc(note.quote.text)}${fr ? ' »' : '”'}<cite>${esc(note.quote.author)}</cite></blockquote>` : ''}
       <div class="dn-foot"><button class="btn ghost sm" data-dn-fold>${esc(t('Thank you'))} ${icon('check', 'sm')}</button></div>

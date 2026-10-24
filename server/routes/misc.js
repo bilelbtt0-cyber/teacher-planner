@@ -72,6 +72,13 @@ miscRouter.get('/dashboard', async (req, res) => {
       (await db.all('SELECT * FROM events WHERE start >= ? AND start < ?', addDays(today, -1), today)).reduce((sum, e) => sum + teachingHours(e), 0)
     ),
     holiday: (await db.get('SELECT name FROM holidays WHERE start_date <= ? AND end_date >= ? LIMIT 1', today.slice(0, 10), today.slice(0, 10)))?.name || null,
+    // Holidays starting within ten days, so the note can say they are coming.
+    nextHoliday:
+      (await db.get(
+        'SELECT name, start_date AS start FROM holidays WHERE start_date > ? AND start_date <= ? ORDER BY start_date LIMIT 1',
+        today.slice(0, 10),
+        addDays(today, 10).slice(0, 10)
+      )) || null,
   });
 });
 

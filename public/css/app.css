@@ -990,6 +990,13 @@ body.onboarding-lock .content { padding-bottom: 48px; }
 .dn-ic { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--surface); color: var(--primary-text); box-shadow: var(--shadow-sm); }
 .dn-label { font-size: 12.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--primary-text); }
 .dn-body { font-size: 16px; line-height: 1.65; color: var(--text); max-width: 760px; }
+.dn-tip {
+  display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 4px; padding: 9px 12px; border-radius: 12px; max-width: 760px;
+  background: color-mix(in srgb, var(--surface) 75%, transparent); border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+  font-size: 14.5px; line-height: 1.55; color: var(--text-2);
+}
+.dn-tip svg { flex: none; margin-top: 3px; color: var(--primary-text); }
+.dn-tip strong { color: var(--primary-text); font-weight: 700; margin-right: 2px; }
 .dn-closing { font-size: 16px; line-height: 1.6; color: var(--text); font-weight: 600; margin-top: 6px; }
 .dn-quote { margin: 14px 0 0; padding: 10px 0 0 14px; border-left: 3px solid color-mix(in srgb, var(--primary) 45%, transparent); font-size: 14.5px; font-style: italic; color: var(--text-2); line-height: 1.55; max-width: 720px; }
 .dn-quote cite { display: block; font-style: normal; font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
