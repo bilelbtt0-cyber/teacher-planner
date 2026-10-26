@@ -2,6 +2,7 @@ import { db, getSettings } from './db.js';
 import { nowIn, addMinutes, toDate, timePart, datePart, inWindow, addDays } from './time.js';
 import { sendMail, layout, itemRow, esc, APP_URL } from './mailer.js';
 import { runAnnouncements } from './announcements.js';
+import { purgeTrash } from './trash.js';
 
 const STRINGS = {
   en: {
@@ -241,9 +242,13 @@ async function cleanup() {
   await db.run(`DELETE FROM sent_log WHERE sent_at < datetime('now', '-120 days')`);
   await db.run(`DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < datetime('now', '-180 days')`);
   await db.run(`DELETE FROM email_log WHERE created_at < datetime('now', '-90 days')`);
+  await db.run('DELETE FROM login_attempts WHERE first_at < ?', Date.now() - 86400000);
+  await db.run('DELETE FROM auth_codes WHERE expires_at < ?', new Date().toISOString());
+  await purgeTrash();
 }
 
 let running = false;
+let lastCleanup = 0;
 export async function tick() {
   if (running) return;
   running = true;
@@ -259,7 +264,11 @@ export async function tick() {
     await runAttestations(settings, now, s, f, cats);
     await runDigest(settings, now, s, f, cats);
     await runAnnouncements(settings, now, notify);
-    if (now.endsWith(':00')) await cleanup();
+    // Once an hour (a host that sleeps may never wake exactly on the hour).
+    if (Date.now() - lastCleanup > 3600 * 1000) {
+      lastCleanup = Date.now();
+      await cleanup();
+    }
   } catch (err) {
     console.error('[scheduler]', err);
   } finally {

@@ -1,0 +1,59 @@
+# Every night, copies the online database and keeps it 30 days as an encrypted file
+# (Actions → Nightly backup → a run → Artifacts). GitHub emails you if a backup fails.
+#
+# Needs three repository secrets (Settings → Secrets and variables → Actions):
+#   BACKUP_DATABASE_URL    libsql://… (the Turso database URL)
+#   BACKUP_DATABASE_TOKEN  a READ-ONLY Turso token, made only for backups
+#   BACKUP_PASSPHRASE      a long passphrase; without it a backup cannot be opened
+#
+# To open a backup: unzip the artifact, then
+#   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in planner-….db.gz.enc -out planner.db.gz -pass pass:'YOUR PASSPHRASE'
+#   gunzip planner.db.gz
+name: Nightly backup
+
+on:
+  schedule:
+    - cron: '30 1 * * *' # 02:30 in Tunisia
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install the database client
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: Copy the online database
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_DATABASE_TOKEN: ${{ secrets.BACKUP_DATABASE_TOKEN }}
+        run: node scripts/backup-db.mjs backup.db
+
+      - name: Compress and encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$BACKUP_PASSPHRASE" ]; then echo "Missing BACKUP_PASSPHRASE secret"; exit 1; fi
+          name="planner-$(date -u +%Y-%m-%d).db.gz.enc"
+          gzip -9 backup.db
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in backup.db.gz -out "$name" -pass env:BACKUP_PASSPHRASE
+          rm backup.db.gz
+          echo "BACKUP_FILE=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_FILE }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 30
+          if-no-files-found: error

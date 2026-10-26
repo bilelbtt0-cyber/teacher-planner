@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { putInTrash } from '../trash.js';
 import { db, transaction, getSettings } from '../db.js';
 import { httpError } from '../errors.js';
 import { nowIn } from '../time.js';
@@ -106,11 +107,25 @@ coursesRouter.put('/:id', async (req, res) => {
 /** Deletes the course and its support files. Its sessions stay in the calendar and the history. */
 coursesRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  await transaction(async () => {
+  const course = await db.get('SELECT title FROM courses WHERE id = ?', id);
+  if (!course) return res.json({ ok: true });
+  const trashId = await transaction(async () => {
+    const eventIds = (await db.all('SELECT id FROM events WHERE course_id = ?', id)).map((e) => e.id);
+    const tid = await putInTrash(
+      'course',
+      course.title,
+      [
+        { tbl: 'courses', where: 'id = ?', args: [id] },
+        { tbl: 'documents', where: 'course_id = ?', args: [id] },
+        { tbl: 'document_events', where: 'document_id IN (SELECT id FROM documents WHERE course_id = ?)', args: [id] },
+      ],
+      { courseId: id, eventIds }
+    );
     await db.run('DELETE FROM document_events WHERE document_id IN (SELECT id FROM documents WHERE course_id = ?)', id);
     await db.run('DELETE FROM documents WHERE course_id = ?', id);
     await db.run('UPDATE events SET course_id = NULL WHERE course_id = ?', id);
     await db.run('DELETE FROM courses WHERE id = ?', id);
+    return tid;
   });
-  res.json({ ok: true });
+  res.json({ ok: true, trashId });
 });

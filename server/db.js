@@ -235,6 +235,38 @@ const MIGRATIONS = [
   `
   ALTER TABLE documents ADD COLUMN ocr_text TEXT NOT NULL DEFAULT '';
   `,
+  // 6: a trash bin (deleted items kept 30 days), sign-in attempts that survive a restart,
+  // and one-time codes for "forgotten password" and "this wasn't me".
+  `
+  CREATE TABLE trash (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE trash_rows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trash_id INTEGER NOT NULL REFERENCES trash(id) ON DELETE CASCADE,
+    tbl TEXT NOT NULL,
+    data TEXT NOT NULL,
+    file_data BLOB,
+    thumb_data BLOB
+  );
+  CREATE INDEX idx_trash_rows_trash ON trash_rows(trash_id);
+  CREATE TABLE login_attempts (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_at INTEGER NOT NULL
+  );
+  CREATE TABLE auth_codes (
+    code_hash TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    tries INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 /** Creates or upgrades the schema. Called once before the server starts listening. */

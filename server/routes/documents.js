@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
+import { putInTrash } from '../trash.js';
 import { db, transaction, getSettings, UPLOAD_DIR } from '../db.js';
 import { httpError } from '../errors.js';
 import { isDateOnly, nowIn } from '../time.js';
@@ -361,13 +362,17 @@ documentsRouter.put('/:id', uploadFiles, async (req, res) => {
 
 documentsRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = await db.get('SELECT file_name, thumb_name FROM documents WHERE id = ?', id);
+  const row = await db.get('SELECT title FROM documents WHERE id = ?', id);
   if (!row) return res.json({ ok: true });
-  await transaction(async () => {
+  // Kept in the trash for 30 days (older files saved on disk stay there too, so it can come back).
+  const trashId = await transaction(async () => {
+    const tid = await putInTrash('document', row.title, [
+      { tbl: 'documents', where: 'id = ?', args: [id] },
+      { tbl: 'document_events', where: 'document_id = ?', args: [id] },
+    ]);
     await db.run('DELETE FROM document_events WHERE document_id = ?', id);
     await db.run('DELETE FROM documents WHERE id = ?', id);
+    return tid;
   });
-  removeLegacyFile(row.file_name);
-  removeLegacyFile(row.thumb_name);
-  res.json({ ok: true });
+  res.json({ ok: true, trashId });
 });

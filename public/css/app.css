@@ -1041,3 +1041,10 @@ body.onboarding-lock .content { padding-bottom: 48px; }
 /* An appointment that can have a support but has none yet. */
 .support-box.empty { background: var(--surface-2); border-style: dashed; border-color: var(--border-strong); }
 .support-box.empty .head { color: var(--text-2); }
+
+/* Trash */
+.trash-list { display: grid; gap: 8px; }
+.trash-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.trash-ic { flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--primary-soft, var(--surface-2)); color: var(--primary-text); }
+.trash-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+@media (max-width: 520px) { .trash-item { flex-wrap: wrap; } .trash-text { flex-basis: calc(100% - 42px); } .trash-item [data-restore] { margin-left: 42px; } }

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { putInTrash } from '../trash.js';
 import { db, transaction, getSettings } from '../db.js';
 import { httpError } from '../errors.js';
 import { isWallClock, addMinutes, diffMinutes, nowIn } from '../time.js';
@@ -295,15 +296,20 @@ eventsRouter.delete('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const mode = req.query.mode === 'cancel' ? 'cancel' : 'delete';
   const row = await getRow(id);
+  let trashId = null;
   await transaction(async () => {
     if (mode === 'cancel') {
       await db.run(`UPDATE events SET status = 'cancelled', cancel_reason = NULL, updated_at = datetime('now') WHERE id = ?`, id);
     } else {
+      trashId = await putInTrash('event', row.title, [
+        { tbl: 'events', where: 'id = ?', args: [id] },
+        { tbl: 'document_events', where: 'event_id = ?', args: [id] },
+      ]);
       await deleteEvents([id]);
     }
     await recomputeCategory(row.category_id);
   });
-  res.json({ ok: true });
+  res.json({ ok: true, trashId });
 });
 
 /** Every attestation state change goes through here. */

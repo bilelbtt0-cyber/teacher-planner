@@ -1,0 +1,15 @@
+# Security updates only: Dependabot opens a pull request when a library the app uses has a known
+# vulnerability. Ordinary version bumps are switched off (limit 0) to avoid noise.
+# Merging to main redeploys the site, so follow the usual release steps before merging.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0

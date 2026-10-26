@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sécurité du compte</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fdf2f6; --card: #fff; --text: #23181d; --muted: #6b5a61; --accent: #c2410c; --line: #f0d9e2; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1b1417; --card: #261d21; --text: #f5ecef; --muted: #bfaeb5; --line: #3a2c32; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text);
+      font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    main { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 28px; }
+    h1 { font-size: 22px; margin: 0 0 10px; }
+    p { font-size: 15px; line-height: 1.55; color: var(--muted); margin: 0 0 14px; }
+    button, a.btn { display: block; width: 100%; text-align: center; border: 0; border-radius: 12px; padding: 13px 16px; font: inherit; font-weight: 600;
+      font-size: 15px; cursor: pointer; text-decoration: none; background: var(--accent); color: #fff; margin-top: 8px; }
+    a.btn.soft { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    button[disabled] { opacity: .6; cursor: default; }
+    .err { color: #b91c1c; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <section id="ask">
+      <h1 data-t="title"></h1>
+      <p data-t="explain"></p>
+      <button id="go" data-t="button"></button>
+      <a class="btn soft" href="/" data-t="cancel"></a>
+      <p class="err" id="err" hidden></p>
+    </section>
+    <section id="done" hidden>
+      <h1 data-t="doneTitle"></h1>
+      <p data-t="doneText"></p>
+      <a class="btn" href="/" data-t="signIn"></a>
+    </section>
+  </main>
+  <script src="/js/secure.js"></script>
+</body>
+</html>

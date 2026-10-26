@@ -3,6 +3,7 @@ import { t, tn, reminderLabel, timeAgo, dateToWall, fmtDate } from '../i18n.js';
 import { state, subscribe, loadSettings, loadCategories, changed } from '../store.js';
 import { esc, icon, on, toast, errorToast, setBusy, confirmDialog, initials, openModal, PALETTES, paletteGrid } from '../ui.js';
 import { openCategoryForm, ruleDescription, categoryPayload } from '../eventForm.js';
+import { openTrash } from '../trash.js';
 
 // Settings in four plain sections. Everything saves by itself; the few detailed or technical
 // options are folded away ("Customise", "Advanced") so the page stays short.
@@ -234,6 +235,7 @@ export async function render(root, params) {
         )}</p></div></div>
         <div class="card-body">
           ${row(t('Full backup'), t('All appointments, courses, settings and documents in one .zip file.'), `<a class="btn" href="/api/export/backup">${icon('download', 'sm')}${esc(t('Download'))}</a>`)}
+          ${row(t('Trash'), t('Deleted appointments, documents and courses can be restored for 30 days.'), `<button class="btn" data-open-trash>${icon('trash', 'sm')}${esc(t('Open the trash'))}</button>`)}
           ${row(t('My schedule as a PDF'), t('A week or a month, ready to print or send.'), `<button class="btn" data-export-pdf>${icon('fileText', 'sm')}${esc(t('Download'))}</button>`)}
           ${
             generated
@@ -458,6 +460,7 @@ export async function render(root, params) {
       footer: `<span class="spacer"></span><button class="btn primary" data-close>${esc(t('Close'))}</button>`,
     });
   });
+  on(box, 'click', '[data-open-trash]', () => openTrash());
   on(box, 'click', '[data-test-email]', async (e, b) => {
     setBusy(b, true);
     try {

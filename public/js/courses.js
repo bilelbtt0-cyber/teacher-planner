@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { deletedToast } from './trash.js';
 import { t, tn, durationLabel, fileSize } from './i18n.js';
 import { categoryById, activeCategories, loadCourses, changed } from './store.js';
 import { esc, icon, on, openModal, confirmDialog, toast, errorToast, setBusy } from './ui.js';
@@ -293,15 +294,16 @@ export async function openCourseForm(existing = null, prefill = {}) {
       const f = files.find((x) => x.id === Number(b.dataset.delFile));
       const ok = await confirmDialog({
         title: t('Remove “{name}”?', { name: f.title }),
-        message: esc(t('The file will be deleted permanently.')),
+        message: esc(t('It stays 30 days in the trash (Settings → My data), in case you change your mind.')),
         confirm: t('Remove'),
         danger: true,
       });
       if (!ok) return;
       readInputs();
       try {
-        await api.del(`/api/documents/${f.id}`);
+        const res = await api.del(`/api/documents/${f.id}`);
         await refreshFiles();
+        deletedToast(t('File removed'), res.trashId);
       } catch (err) {
         errorToast(err);
       }
@@ -326,7 +328,7 @@ export async function openCourseForm(existing = null, prefill = {}) {
       const ok = await confirmDialog({
         title: t('Delete “{name}”?', { name: existing.title }),
         message:
-          esc(t('The course, its summary and its files will be deleted.')) +
+          esc(t('The course, its summary and its files go to the trash for 30 days.')) +
           (existing.sessionCount ? `<br><br>${esc(tn(existing.sessionCount, 'Its {n} session stays in your calendar.', 'Its {n} sessions stay in your calendar.'))}` : '') +
           `<br><br>${esc(t('Tip: archive it instead to keep it out of the way.'))}`,
         confirm: t('Delete'),
@@ -334,13 +336,13 @@ export async function openCourseForm(existing = null, prefill = {}) {
       });
       if (!ok) return;
       try {
-        await api.del(`/api/courses/${existing.id}`);
+        const res = await api.del(`/api/courses/${existing.id}`);
         await loadCourses();
         changed();
         dirty = false;
         result = null;
         m.close(true);
-        toast(t('Course deleted'));
+        deletedToast(t('Course deleted'), res.trashId);
       } catch (err) {
         errorToast(err);
       }

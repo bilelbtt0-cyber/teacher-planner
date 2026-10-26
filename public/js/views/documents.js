@@ -1,4 +1,5 @@
 import { api, qs } from '../api.js';
+import { deletedToast } from '../trash.js';
 import { t, tn, fmtDate, fmtMonthYear, fmtShort, fmtTime, fileSize, hoursLabel } from '../i18n.js';
 import { state, subscribe, activeCategories, categoryById, changed } from '../store.js';
 import { esc, icon, on, emptyState, openModal, confirmDialog, toast, errorToast, setBusy, debounce } from '../ui.js';
@@ -309,17 +310,17 @@ export async function openDocument(id) {
   m.root.querySelector('[data-delete]').addEventListener('click', async () => {
     const ok = await confirmDialog({
       title: t('Delete this document?'),
-      message: esc(t('The file will be removed permanently. Linked sessions keep their “received” status.')),
+      message: esc(t('It stays 30 days in the trash (Settings → My data), in case you change your mind. Linked sessions keep their “received” status.')),
       confirm: t('Delete'),
       danger: true,
     });
     if (!ok) return;
     try {
-      await api.del(`/api/documents/${d.id}`);
+      const res = await api.del(`/api/documents/${d.id}`);
       dirty = false;
       changed();
       m.close(true);
-      toast(t('Document deleted'));
+      deletedToast(t('Document deleted'), res.trashId);
     } catch (err) {
       errorToast(err);
     }

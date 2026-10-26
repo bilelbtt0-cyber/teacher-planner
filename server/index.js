@@ -8,6 +8,7 @@ import { documentsRouter } from './routes/documents.js';
 import { coursesRouter } from './routes/courses.js';
 import { miscRouter } from './routes/misc.js';
 import { holidaysRouter } from './routes/holidays.js';
+import { trashRouter } from './routes/trash.js';
 import { startScheduler, tick } from './scheduler.js';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -109,6 +110,7 @@ app.use('/api/categories', categoriesRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/courses', coursesRouter);
 app.use('/api/holidays', holidaysRouter);
+app.use('/api/trash', trashRouter);
 app.use('/api', miscRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 

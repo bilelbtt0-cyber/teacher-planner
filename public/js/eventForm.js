@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { deletedToast } from './trash.js';
 import {
   t, tn, fmtDayYear, fmtShort, fmtDate, fmtTime, timeRange, durationLabel, reminderLabel, nowWall, todayStr,
   addMinutesWall, minutesBetween, addDaysStr, daysAgo, hoursLabel,
@@ -997,9 +998,9 @@ function renderDrawer(e) {
       } else if (act === 'delete') {
         const hasHistory = e.attestation.status === 'received' || e.documents.length;
         const ok = await confirmDialog({
-          title: t('Delete permanently?'),
+          title: t('Delete this appointment?'),
           message:
-            esc(t('This cannot be undone.')) +
+            esc(t('It stays 30 days in the trash (Settings → My data), in case you change your mind.')) +
             (hasHistory ? `<br><br><b>${esc(t('This session has a received attestation or documents. The documents are kept in My documents.'))}</b>` : '') +
             `<br><br>${esc(t('Tip: “Cancel session” keeps it in your history instead.'))}`,
           confirm: t('Delete'),
@@ -1007,10 +1008,10 @@ function renderDrawer(e) {
         });
         if (!ok) return;
         try {
-          await api.del(`/api/events/${e.id}?mode=delete`);
+          const res = await api.del(`/api/events/${e.id}?mode=delete`);
           closeDrawer();
           changed();
-          toast(t('Appointment deleted'));
+          deletedToast(t('Appointment deleted'), res.trashId);
         } catch (err) {
           errorToast(err);
         }

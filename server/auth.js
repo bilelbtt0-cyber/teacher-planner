@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
-import { db } from './db.js';
+import { db, getSettings } from './db.js';
 import { httpError } from './errors.js';
+import { emailConfigured } from './mailer.js';
+import { sendSignInAlert, sendPasswordChanged, sendResetCode } from './securityMail.js';
 
 const COOKIE = 'tp_session';
 // She stays signed in on her device: a session lasts a year and is renewed when she uses the app.
@@ -80,19 +82,66 @@ export async function requireAuth(req, res, next) {
   next();
 }
 
-// Basic brute-force protection: 8 failed attempts per IP lock login for 10 minutes.
-const attempts = new Map();
-function checkRate(ip) {
-  const a = attempts.get(ip);
-  if (a && a.count >= 8 && Date.now() - a.first < 10 * 60000) {
-    throw httpError(429, 'Too many attempts. Please wait a few minutes and try again.');
+// Brute-force protection, kept in the database so a restart of the host does not reset it.
+// Each key ("ip:…", "account:…") allows a number of failures per 15 minutes.
+const WINDOW_MS = 15 * 60000;
+const LIMITS = { ip: 8, account: 20, forgot: 5 };
+const limitOf = (key) => LIMITS[key.split(':')[0]];
+
+async function checkRate(...keys) {
+  for (const key of keys) {
+    const a = await db.get('SELECT count, first_at FROM login_attempts WHERE key = ?', key);
+    if (a && Date.now() - a.first_at < WINDOW_MS && a.count >= limitOf(key)) {
+      throw httpError(429, 'Too many attempts. Please wait a few minutes and try again.');
+    }
   }
-  if (a && Date.now() - a.first >= 10 * 60000) attempts.delete(ip);
 }
-function recordFailure(ip) {
-  const a = attempts.get(ip) || { count: 0, first: Date.now() };
-  a.count += 1;
-  attempts.set(ip, a);
+async function recordFailure(...keys) {
+  const now = Date.now();
+  for (const key of keys) {
+    await db.run(
+      `INSERT INTO login_attempts (key, count, first_at) VALUES (?, 1, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         count = CASE WHEN ? - first_at >= ? THEN 1 ELSE count + 1 END,
+         first_at = CASE WHEN ? - first_at >= ? THEN ? ELSE first_at END`,
+      key, now, now, WINDOW_MS, now, WINDOW_MS, now
+    );
+  }
+}
+async function clearFailures(...keys) {
+  for (const key of keys) await db.run('DELETE FROM login_attempts WHERE key = ?', key);
+}
+const accountKey = (email) => `account:${String(email || '').trim().toLowerCase()}`;
+
+// One-time codes ("forgotten password", "this wasn't me") are stored only as a hash.
+const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+async function createCode(purpose, userId, code, minutes) {
+  await db.run('DELETE FROM auth_codes WHERE purpose = ? AND user_id = ?', purpose, userId);
+  await db.run(
+    'INSERT INTO auth_codes (code_hash, purpose, user_id, expires_at) VALUES (?, ?, ?, ?)',
+    sha256(`${purpose}:${code}`),
+    purpose,
+    userId,
+    new Date(Date.now() + minutes * 60000).toISOString()
+  );
+}
+
+/** Emails her about a new sign-in, with a link to sign every device out. Never blocks the sign-in. */
+async function alertSignIn(req, userId) {
+  try {
+    const token = crypto.randomBytes(32).toString('hex');
+    // Several alerts may be valid at once (one per sign-in), so older links are kept until they expire.
+    await db.run(
+      'INSERT INTO auth_codes (code_hash, purpose, user_id, expires_at) VALUES (?, ?, ?, ?)',
+      sha256(`revoke:${token}`),
+      'revoke',
+      userId,
+      new Date(Date.now() + 14 * 86400000).toISOString()
+    );
+    await sendSignInAlert(req.headers['user-agent'], token);
+  } catch (err) {
+    console.error('[sign-in alert]', err.message);
+  }
 }
 
 function validEmail(email) {
@@ -115,9 +164,9 @@ authRouter.post('/setup', async (req, res) => {
   if (await hasUser()) throw httpError(409, 'An account already exists. Please sign in.');
   const { name, email, password, setupCode } = req.body || {};
   if (SETUP_CODE) {
-    checkRate(req.ip);
+    await checkRate(`ip:${req.ip}`);
     if (String(setupCode || '').trim() !== SETUP_CODE) {
-      recordFailure(req.ip);
+      await recordFailure(`ip:${req.ip}`);
       throw httpError(403, 'The invitation code is not correct.');
     }
   }
@@ -135,17 +184,85 @@ authRouter.post('/setup', async (req, res) => {
 });
 
 authRouter.post('/login', async (req, res) => {
-  const ip = req.ip;
-  checkRate(ip);
   const { email, password } = req.body || {};
+  const keys = [`ip:${req.ip}`, accountKey(email)];
+  await checkRate(...keys);
   const user = await db.get('SELECT * FROM users WHERE email = ?', String(email || '').trim().toLowerCase());
   if (!user || !verifyPassword(String(password || ''), user.password_hash)) {
-    recordFailure(ip);
+    await recordFailure(...keys);
     throw httpError(401, 'Email or password is incorrect.');
   }
-  attempts.delete(ip);
+  await clearFailures(...keys);
   await createSession(res, req, user.id);
   res.json({ ok: true });
+  alertSignIn(req, user.id);
+});
+
+// "This wasn't me", from the sign-in email: signs every device out. The link holds a one-time token.
+authRouter.post('/revoke', async (req, res) => {
+  await checkRate(`ip:${req.ip}`);
+  const row = await db.get(
+    "SELECT * FROM auth_codes WHERE purpose = 'revoke' AND code_hash = ? AND expires_at > ?",
+    sha256(`revoke:${String(req.body?.token || '')}`),
+    new Date().toISOString()
+  );
+  if (!row) {
+    await recordFailure(`ip:${req.ip}`);
+    throw httpError(400, 'This link has expired or was already used.');
+  }
+  await db.run('DELETE FROM sessions WHERE user_id = ?', row.user_id);
+  await db.run("DELETE FROM auth_codes WHERE purpose = 'revoke' AND user_id = ?", row.user_id);
+  res.json({ ok: true });
+});
+
+// Forgotten password, step 1: a 6-digit code is emailed if the address is the account's.
+// The answer is the same either way, so it does not reveal which address is registered.
+authRouter.post('/forgot', async (req, res) => {
+  await checkRate(`forgot:${req.ip}`);
+  await recordFailure(`forgot:${req.ip}`);
+  if (!emailConfigured(await getSettings())) {
+    throw httpError(503, 'Password reset by email is not available yet. Ask the person who set up the app.');
+  }
+  const user = await db.get('SELECT id FROM users WHERE email = ?', String(req.body?.email || '').trim().toLowerCase());
+  if (user) {
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    await createCode('reset', user.id, code, 15);
+    try {
+      await sendResetCode(code);
+    } catch (err) {
+      console.error('[reset code]', err.message);
+      throw httpError(502, 'The email could not be sent. Please try again in a moment.');
+    }
+  }
+  res.json({ ok: true });
+});
+
+// Forgotten password, step 2: the code and a new password. Five wrong codes and it must be asked again.
+authRouter.post('/reset', async (req, res) => {
+  const { email, code, password } = req.body || {};
+  const keys = [`ip:${req.ip}`, accountKey(email)];
+  await checkRate(...keys);
+  const wrong = async () => {
+    await recordFailure(...keys);
+    return httpError(400, 'This code is not correct or has expired. Ask for a new one.');
+  };
+  if (!password || String(password).length < 8) throw httpError(400, 'The new password needs at least 8 characters.');
+  const user = await db.get('SELECT id FROM users WHERE email = ?', String(email || '').trim().toLowerCase());
+  const row = user && (await db.get("SELECT * FROM auth_codes WHERE purpose = 'reset' AND user_id = ? AND expires_at > ?", user.id, new Date().toISOString()));
+  if (!row || row.tries >= 5) throw await wrong();
+  const expected = Buffer.from(row.code_hash, 'hex');
+  const given = Buffer.from(sha256(`reset:${String(code || '').replace(/\D/g, '')}`), 'hex');
+  if (!crypto.timingSafeEqual(expected, given)) {
+    await db.run('UPDATE auth_codes SET tries = tries + 1 WHERE code_hash = ?', row.code_hash);
+    throw await wrong();
+  }
+  await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(String(password)), user.id);
+  await db.run('DELETE FROM sessions WHERE user_id = ?', user.id);
+  await db.run("DELETE FROM auth_codes WHERE purpose = 'reset' AND user_id = ?", user.id);
+  await clearFailures(...keys);
+  await createSession(res, req, user.id);
+  res.json({ ok: true });
+  sendPasswordChanged().catch(() => {});
 });
 
 authRouter.post('/logout', async (req, res) => {
@@ -166,6 +283,7 @@ authRouter.put('/profile', requireAuth, async (req, res) => {
     await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(String(newPassword)), user.id);
     // Sign out every other device after a password change.
     await db.run('DELETE FROM sessions WHERE user_id = ? AND token != ?', user.id, req.user.token);
+    sendPasswordChanged().catch(() => {});
   }
   await db.run(
     'UPDATE users SET name = ?, email = ? WHERE id = ?',

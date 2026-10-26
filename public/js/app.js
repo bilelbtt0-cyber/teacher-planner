@@ -117,11 +117,13 @@ function showAuth(mode) {
           ${setup ? `<div class="field"><label for="a-lang">${esc(t('Language'))}</label>
             <select class="select" id="a-lang" name="language"><option value="fr">Français</option><option value="en">English</option></select></div>` : ''}
           <button class="btn primary lg block" type="submit">${esc(setup ? t('Create my planner') : t('Sign in'))}</button>
+          ${setup ? '' : `<button class="btn ghost block" type="button" data-forgot>${esc(t('Forgot your password?'))}</button>`}
         </form>
       </div>
     </div>`;
   const form = app.querySelector('form');
   if (setup) form.language.value = navigator.language?.startsWith('fr') ? 'fr' : 'en';
+  form.querySelector('[data-forgot]')?.addEventListener('click', () => showForgot(form.email.value));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = form.querySelector('button[type=submit]');
@@ -144,6 +146,71 @@ function showAuth(mode) {
       setBusy(btn, false);
     }
   });
+}
+
+/** Forgotten password: a code is emailed, then she chooses a new password and is signed in. */
+function showForgot(email = '') {
+  const wrap = app.querySelector('.auth-form-wrap');
+  let step = 'email';
+  const render = () => {
+    wrap.innerHTML = `
+      <form class="auth-form stack" novalidate>
+        <div>
+          <h2>${esc(t('Forgot your password?'))}</h2>
+          <p>${esc(step === 'email' ? t('Enter your email: we will send you a code to choose a new password.') : t('If this email is the one of your account, a 6-digit code is on its way. Check your spam folder too.'))}</p>
+        </div>
+        <div class="form-error" hidden></div>
+        ${
+          step === 'email'
+            ? `<div class="field"><label for="f-email">${esc(t('Email'))}</label>
+                <input class="input" id="f-email" name="email" type="email" autocomplete="email" required autofocus value="${esc(email)}"></div>
+              <button class="btn primary lg block" type="submit">${esc(t('Send me a code'))}</button>`
+            : `<div class="field"><label for="f-code">${esc(t('Code'))}</label>
+                <input class="input" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required autofocus></div>
+              <div class="field"><label for="f-pass">${esc(t('New password'))}</label>
+                <input class="input" id="f-pass" name="password" type="password" autocomplete="new-password" required minlength="8">
+                <span class="hint">${esc(t('At least 8 characters.'))}</span></div>
+              <button class="btn primary lg block" type="submit">${esc(t('Change my password'))}</button>
+              <button class="btn ghost block" type="button" data-resend>${esc(t('Send a new code'))}</button>`
+        }
+        <button class="btn ghost block" type="button" data-back>${esc(t('Back to sign in'))}</button>
+      </form>`;
+    const form = wrap.querySelector('form');
+    const errBox = form.querySelector('.form-error');
+    const fail = (err) => {
+      errBox.innerHTML = `${icon('alertCircle')}<span>${esc(err.message === 'offline' ? t('Cannot reach the app. Is it still running?') : t(err.message))}</span>`;
+      errBox.hidden = false;
+    };
+    form.querySelector('[data-back]').addEventListener('click', () => showAuth('login'));
+    form.querySelector('[data-resend]')?.addEventListener('click', () => {
+      step = 'email';
+      render();
+    });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('button[type=submit]');
+      errBox.hidden = true;
+      setBusy(btn, true);
+      try {
+        if (step === 'email') {
+          email = form.email.value.trim();
+          await api.post('/api/auth/forgot', { email });
+          step = 'code';
+          render();
+          return;
+        }
+        await api.post('/api/auth/reset', { email, code: form.code.value, password: form.password.value });
+        const me = await api.get('/api/auth/me');
+        state.user = me.user;
+        await startApp();
+        toast(t('Your password was changed.'), { type: 'success' });
+      } catch (err) {
+        fail(err);
+        setBusy(btn, false);
+      }
+    });
+  };
+  render();
 }
 
 // ---------- Shell ----------
