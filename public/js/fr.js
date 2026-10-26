@@ -1049,4 +1049,5 @@ export const FR = {
   'The email could not be sent. Please try again in a moment.': 'L’email n’a pas pu être envoyé. Réessayez dans un instant.',
   'Password reset by email is not available yet. Ask the person who set up the app.': 'La réinitialisation par email n’est pas encore disponible. Demandez à la personne qui a installé l’application.',
   'This link has expired or was already used.': 'Ce lien a expiré ou a déjà été utilisé.',
+  'A new version of the app is ready.': 'Une nouvelle version de l’application est prête.',
 };

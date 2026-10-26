@@ -445,6 +445,28 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-reload]')) location.reload();
 });
 
+// ---------- Updates ----------
+// Phones keep a tab open for days. When the site has been updated, the tab reloads itself as soon
+// as she comes back to it, unless she is in the middle of something; then she is offered a button.
+const BUILD = document.querySelector('meta[name="app-build"]')?.content;
+let updateOffered = false;
+async function checkForUpdate({ returning = false } = {}) {
+  if (!BUILD || document.hidden || updateOffered) return;
+  let build;
+  try {
+    ({ build } = await (await fetch('/api/health', { cache: 'no-store' })).json());
+  } catch {
+    return; // offline: try again later
+  }
+  if (!build || build === BUILD) return;
+  const busy = hasOpenModal() || location.hash.startsWith('#/welcome') || document.activeElement?.matches?.('input, textarea, select');
+  if (returning && !busy) return location.reload();
+  updateOffered = true;
+  toast(t('A new version of the app is ready.'), { action: t('Reload'), onAction: () => location.reload(), duration: 60000 });
+}
+document.addEventListener('visibilitychange', () => checkForUpdate({ returning: true }));
+setInterval(checkForUpdate, 10 * 60 * 1000);
+
 document.addEventListener('keydown', (e) => {
   if (!state.user || hasOpenModal() || e.ctrlKey || e.metaKey || e.altKey) return;
   const tag = document.activeElement?.tagName;

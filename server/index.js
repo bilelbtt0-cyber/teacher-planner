@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, DB_LOCATION, initDb } from './db.js';
 import { authRouter, requireAuth } from './auth.js';
@@ -90,7 +91,31 @@ app.get('/vendor/tessdata/:file', (req, res, next) => {
   if (!TESS_LANGS.includes(lang)) return next();
   res.sendFile(nm(`@tesseract.js-data/${lang}/4.0.0_best_int/${lang}.traineddata.gz`), { maxAge: '30d' }, (err) => err && next());
 });
-app.use(express.static(path.join(ROOT, 'public'), { index: 'index.html', maxAge: 0 }));
+// Every release gets its own file addresses (/v/<release>/js/app.js), so a phone, a home-screen
+// shortcut or a network cache can never keep serving an old version: the page itself is never
+// cached and always points to the current release. Render provides the commit; locally, the start time.
+const PUBLIC = path.join(ROOT, 'public');
+const BUILD = String(process.env.RENDER_GIT_COMMIT || Date.now().toString(36)).slice(0, 12);
+const INDEX = fs
+  .readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
+  .replace('href="/css/app.css"', `href="/v/${BUILD}/css/app.css"`)
+  .replace('src="/js/app.js"', `src="/v/${BUILD}/js/app.js"`)
+  .replace('<head>', `<head>\n  <meta name="app-build" content="${BUILD}" />`);
+app.get(['/', '/index.html'], (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('html').send(INDEX);
+});
+app.use(
+  '/v/:build',
+  (req, res, next) => {
+    // Files of the current release never change, so they are kept for good. A page from an older
+    // release asking for a file after an update still gets one (the current), just not cached.
+    res.setHeader('Cache-Control', req.params.build === BUILD ? 'public, max-age=31536000, immutable' : 'no-cache');
+    next();
+  },
+  express.static(PUBLIC, { index: false, cacheControl: false })
+);
+app.use(express.static(PUBLIC, { index: false, cacheControl: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
 // Public health check. An external pinger calls it every few minutes: it keeps a free host awake
 // and runs the reminders even if the host paused the app in between.
@@ -100,7 +125,9 @@ app.get('/api/health', (req, res) => {
     lastPingTick = Date.now();
     tick();
   }
-  res.json({ ok: true });
+  // The release lets an open tab notice that the site was updated.
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, build: BUILD });
 });
 
 app.use('/api/auth', authRouter);
