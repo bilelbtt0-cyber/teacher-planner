@@ -87,6 +87,10 @@ export async function render(root, params) {
     selectable: true,
     selectMirror: true,
     dayMaxEvents: true,
+    // A month shows only its own days: no "1 2 3…" of the next month repeated at the bottom,
+    // and an appointment never appears on two month pages.
+    fixedWeekCount: false,
+    showNonCurrentDates: false,
     navLinks: true,
     weekNumbers: false,
     slotMinTime: '00:00:00',

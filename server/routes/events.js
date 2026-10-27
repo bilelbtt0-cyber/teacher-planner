@@ -105,6 +105,7 @@ async function cleanFields(body, { partial = false } = {}) {
   if (body.attestation !== undefined) {
     f._attestation = {
       required: !!body.attestation?.required,
+      received: !!body.attestation?.received,
       note: String(body.attestation?.note ?? '').slice(0, 1000),
     };
   }
@@ -112,12 +113,22 @@ async function cleanFields(body, { partial = false } = {}) {
 }
 
 /** Turns the attestation part of a payload into column updates for one existing (or new) row. */
-function attestationColumns(att, row) {
+/**
+ * `end` and `now` let a session that is already over be entered with its attestation "already
+ * received" (her history from past years): it is then never reminded, and counts in the year it happened.
+ */
+function attestationColumns(att, row, end, now) {
   if (!att) return {};
   const cols = { attestation_note: att.note };
   if (att.required) {
     if (!row || !row.attestation_required) {
-      Object.assign(cols, { attestation_required: 1, attestation_source: 'manual', attestation_status: 'pending' });
+      const past = end && now && end <= now;
+      Object.assign(
+        cols,
+        att.received && past
+          ? { attestation_required: 1, attestation_source: 'manual', attestation_status: 'received', attestation_received_at: end }
+          : { attestation_required: 1, attestation_source: 'manual', attestation_status: 'pending' }
+      );
     } else {
       // Turned back on after "not needed": it is pending again.
       if (row.attestation_status === 'waived') Object.assign(cols, { attestation_status: 'pending', attestation_last_nag_at: null });
@@ -240,16 +251,42 @@ eventsRouter.get('/:id', async (req, res) => {
   res.json(await loadEvent(parseInt(req.params.id, 10)));
 });
 
+// "Repeat every week until…": one independent session per week (they are not linked afterwards).
+// Classes and exams that would fall in a holiday are skipped.
+const MAX_REPEAT = 200;
+async function weeklyStarts(fields, until) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(until || ''))) throw httpError(400, 'Please choose until when to repeat.');
+  if (until < fields.start.slice(0, 10)) throw httpError(400, 'The repeat must end on or after the first session.');
+  const starts = [];
+  for (let s = fields.start; s.slice(0, 10) <= until; s = addMinutes(s, 7 * 1440)) {
+    starts.push(s);
+    if (starts.length > MAX_REPEAT) throw httpError(400, 'That makes too many sessions at once. Choose a shorter period (at most 200 weeks).');
+  }
+  if (!['class', 'exam'].includes(fields.kind)) return { starts, skipped: 0 };
+  const holidays = await db.all('SELECT start_date, end_date FROM holidays WHERE cancel_classes = 1');
+  const inHoliday = (s) => holidays.some((h) => s.slice(0, 10) >= h.start_date && s.slice(0, 10) <= h.end_date);
+  const kept = starts.filter((s) => !inHoliday(s));
+  return { starts: kept, skipped: starts.length - kept.length };
+}
+
 eventsRouter.post('/', async (req, res) => {
   const fields = await cleanFields(req.body);
-  const att = attestationColumns(fields._attestation, null);
+  const now = nowIn((await getSettings()).timezone);
+  const repeat = req.body?.repeat?.until ? await weeklyStarts(fields, req.body.repeat.until) : null;
+  if (repeat && !repeat.starts.length) throw httpError(400, 'Every week of that period falls in a holiday.');
+  const attInput = fields._attestation;
   delete fields._attestation;
-  const id = await transaction(async () => {
-    const newId = await insertRow({ ...fields, ...att });
+  const length = diffMinutes(fields.start, fields.end);
+  const ids = await transaction(async () => {
+    const created = [];
+    for (const start of repeat ? repeat.starts : [fields.start]) {
+      const end = addMinutes(start, length);
+      created.push(await insertRow({ ...fields, start, end, ...attestationColumns(attInput, null, end, now) }));
+    }
     await recomputeCategory(fields.category_id);
-    return newId;
+    return created;
   });
-  res.status(201).json({ event: await loadEvent(id) });
+  res.status(201).json({ event: await loadEvent(ids[0]), created: ids.length, skipped: repeat?.skipped || 0 });
 });
 
 eventsRouter.put('/:id', async (req, res) => {
@@ -258,8 +295,9 @@ eventsRouter.put('/:id', async (req, res) => {
   const fields = await cleanFields(req.body);
   const att = fields._attestation;
   delete fields._attestation;
+  const now = nowIn((await getSettings()).timezone);
   await transaction(async () => {
-    await updateRow(id, { ...fields, ...attestationColumns(att, row) });
+    await updateRow(id, { ...fields, ...attestationColumns(att, row, fields.end || row.end, now) });
     for (const c of new Set([row.category_id, fields.category_id])) await recomputeCategory(c);
   });
   res.json({ event: await loadEvent(id) });

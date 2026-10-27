@@ -1048,3 +1048,8 @@ body.onboarding-lock .content { padding-bottom: 48px; }
 .trash-ic { flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--primary-soft, var(--surface-2)); color: var(--primary-text); }
 .trash-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
 @media (max-width: 520px) { .trash-item { flex-wrap: wrap; } .trash-text { flex-basis: calc(100% - 42px); } .trash-item [data-restore] { margin-left: 42px; } }
+
+/* Weekly repeat in the appointment form, and school-year headings in the attestation history */
+.repeat-box { padding: 10px 12px; border: 1px dashed var(--border); border-radius: 12px; }
+.att-year { margin: 14px 2px 6px; font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
+.att-year:first-child { margin-top: 0; }

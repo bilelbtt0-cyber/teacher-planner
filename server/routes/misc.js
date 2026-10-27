@@ -415,8 +415,10 @@ miscRouter.get('/export/backup', async (req, res) => {
   const date = nowIn((await getSettings()).timezone).slice(0, 10);
   const tables = ['users', 'settings', 'categories', 'courses', 'series', 'events', 'holidays', 'documents', 'document_events', 'notifications'];
   const data = { exportedAt: new Date().toISOString(), version: 1, tables: {} };
+  // Never load the documents' files here: years of scans would not fit in a small server's memory.
+  const docColumns = (await db.all('PRAGMA table_info(documents)')).map((c) => c.name).filter((c) => !['file_data', 'thumb_data'].includes(c));
   for (const t of tables) {
-    const rows = await db.all(t === 'documents' ? 'SELECT * FROM documents' : `SELECT * FROM ${t}`);
+    const rows = await db.all(t === 'documents' ? `SELECT ${docColumns.join(', ')} FROM documents` : `SELECT * FROM ${t}`);
     data.tables[t] = rows.map((r) => {
       const copy = { ...r };
       if (t === 'users') delete copy.password_hash;
@@ -434,12 +436,17 @@ miscRouter.get('/export/backup', async (req, res) => {
     res.destroy(err);
   });
   archive.pipe(res);
+  const dataAdded = new Promise((resolve) => archive.once('entry', resolve));
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
+  await dataAdded;
   const docs = await db.all('SELECT id, title, mime FROM documents WHERE file_data IS NOT NULL');
+  // One document at a time: the next file is read only once the previous one is in the zip.
   for (const d of docs) {
     const { file_data: bytes } = await db.get('SELECT file_data FROM documents WHERE id = ?', d.id);
     const safe = d.title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 80) || 'document';
+    const added = new Promise((resolve) => archive.once('entry', resolve));
     archive.append(Buffer.from(bytes), { name: `documents/${d.id} - ${safe}${ALLOWED[d.mime] || ''}` });
+    await added;
   }
   archive.append(
     'Planner backup\n\n- data.json: all appointments, institutions, attestations and settings (readable text).\n- documents/: every scanned document, ready to open.\n',

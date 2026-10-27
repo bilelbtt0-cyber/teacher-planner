@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, qs } from './api.js';
 import { deletedToast } from './trash.js';
 import {
   t, tn, fmtDayYear, fmtShort, fmtDate, fmtTime, timeRange, durationLabel, reminderLabel, nowWall, todayStr,
@@ -6,6 +6,12 @@ import {
 } from './i18n.js';
 import { state, categoryById, activeCategories, activeCourses, courseById, eventColor, changed, loadCategories, loadCourses } from './store.js';
 import { esc, icon, openModal, confirmDialog, chooseDialog, toast, errorToast, setBusy, on, el, CATEGORY_COLORS } from './ui.js';
+
+/** 30 June of the school year a date belongs to (September → June). */
+function schoolYearEnd(date) {
+  const y = Number(date.slice(0, 4)) + (Number(date.slice(5, 7)) >= 9 ? 1 : 0);
+  return `${y}-06-30`;
+}
 
 export const KINDS = [
   { value: 'class', label: 'Class', icon: 'users' },
@@ -194,7 +200,11 @@ export function openEventForm(opts = {}) {
       reminders: structuredClone(source?.reminders || settings.defaultReminders || []),
       attRequired: source ? !!source.attestation?.required && source.attestation?.status !== 'waived' : false,
       attNote: source?.attestation?.note || '',
+      // For a session already over: was the attestation already received? (her history)
+      attReceived: start.slice(0, 10) < addDaysStr(todayStr(), -14),
       saveAsCourse: false,
+      repeat: false,
+      repeatUntil: schoolYearEnd(start.slice(0, 10)),
     };
     if (v.categoryId && !categoryById(v.categoryId)) v.categoryId = null;
     if (v.courseId && !courseById(v.courseId)) v.courseId = null;
@@ -274,17 +284,26 @@ export function openEventForm(opts = {}) {
           <div class="top">
             <span style="color:${v.attRequired ? 'var(--danger)' : 'var(--text-3)'}">${icon('attestation', 'lg')}</span>
             <div class="txt">
-              <div class="t">${esc(t('Attestation needed'))}${wasAuto && v.attRequired ? ` <span class="chip primary" style="margin-left:6px">${icon('sparkles')}${esc(t('automatic'))}</span>` : ''}</div>
+              <div class="t">${esc(v.attRequired && askReceived() && v.attReceived ? t('Attestation received') : t('Attestation needed'))}${wasAuto && v.attRequired ? ` <span class="chip primary" style="margin-left:6px">${icon('sparkles')}${esc(t('automatic'))}</span>` : ''}</div>
               <div class="d">${esc(
                 attLocked
                   ? t('Already received for this session.')
                   : v.attRequired
-                    ? t('You will be reminded until you mark it as received.')
+                    ? askReceived() ? t('This session is already over.') : t('You will be reminded until you mark it as received.')
                     : t('Turn on if you must collect an attestation for this session.')
               )}</div>
             </div>
             <label class="switch danger"><input type="checkbox" name="attRequired" ${v.attRequired ? 'checked' : ''} ${attLocked ? 'disabled' : ''}><span class="track"></span></label>
           </div>
+          ${
+            v.attRequired && askReceived()
+              ? `<div class="segmented" role="radiogroup" style="margin-top:12px" aria-label="${esc(t('Attestation'))}">
+                  <button type="button" data-att-received="1" class="${v.attReceived ? 'active' : ''}">${icon('check', 'sm')}${esc(t('Already received'))}</button>
+                  <button type="button" data-att-received="0" class="${v.attReceived ? '' : 'active'}">${esc(t('Still to collect'))}</button>
+                </div>
+                <div class="hint" style="margin-top:6px">${esc(v.attReceived ? t('This session is over: it is saved as received, with no reminder.') : t('You will be reminded until you mark it as received.'))}</div>`
+              : ''
+          }
           ${
             v.attRequired
               ? `<div class="field" style="margin-top:12px"><input class="input" name="attNote" value="${esc(v.attNote)}" placeholder="${esc(t('Note: who to ask, what to bring… (optional)'))}" maxlength="1000"></div>`
@@ -295,6 +314,44 @@ export function openEventForm(opts = {}) {
               ? `<div class="hint" style="margin-top:10px;display:flex;gap:6px;align-items:flex-start">${icon('sparkles', 'sm')}<span>${esc(
                   `${auto} ${t('The right sessions are flagged automatically.')}`
                 )}</span></div>`
+              : ''
+          }
+        </div>`;
+    }
+
+    // The session is already over: she is entering her history.
+    function askReceived() {
+      if (editing?.attestation?.required) return false;
+      const endW = v.allDay ? `${addDaysStr(v.endDate, 1)}T00:00` : `${v.date}T${v.endTime}`;
+      return endW <= nowWall();
+    }
+
+    // Reminders make no sense for history: hidden when every session entered is already over.
+    const allInPast = () => askReceived() && (!(canRepeat() && v.repeat) || v.repeatUntil < todayStr());
+
+    const canRepeat = () => !editing && !v.allDay;
+    function repeatCount() {
+      if (!v.repeat || !v.repeatUntil || v.repeatUntil < v.date) return 0;
+      return Math.floor((new Date(`${v.repeatUntil}T12:00`) - new Date(`${v.date}T12:00`)) / (7 * 86400000)) + 1;
+    }
+    function repeatLabel(n) {
+      if (n > 200) return t('Too many sessions at once: at most 200.');
+      if (!n) return t('The repeat must end on or after the first session.');
+      return ['class', 'exam'].includes(v.kind)
+        ? tn(n, '{n} session, holidays skipped', 'Up to {n} sessions, holidays skipped')
+        : tn(n, '{n} appointment', '{n} appointments');
+    }
+    function repeatHtml() {
+      const n = repeatCount();
+      return `<div class="repeat-box">
+          <label class="switch small"><input type="checkbox" name="repeat" ${v.repeat ? 'checked' : ''}><span class="track"></span>${esc(t('Repeat every week'))}</label>
+          ${
+            v.repeat
+              ? `<div class="flex wrap gap-sm" style="align-items:center;margin-top:8px">
+                  <label for="f-until" class="small">${esc(t('until'))}</label>
+                  <input class="input" type="date" id="f-until" name="repeatUntil" value="${v.repeatUntil}" min="${v.date}" style="width:auto">
+                  <span class="small ${n > 200 || !n ? 'error-text' : 'muted'}" data-repeat-count>${esc(repeatLabel(n))}</span>
+                </div>`
               : ''
           }
         </div>`;
@@ -368,12 +425,13 @@ export function openEventForm(opts = {}) {
                 <span class="small ${dur <= 0 ? 'error-text' : 'muted'}" data-dur-label>${dur > 0 ? esc(t('Duration: {d}', { d: durationLabel(dur) })) : esc(t('The end time must be after the start time.'))}</span>
               </div>`
           }
+          ${canRepeat() ? repeatHtml() : ''}
           ${v.date < todayStr() && !editing ? `<div class="tip warning">${icon('info')}<span>${esc(t('This date is in the past. That is fine for keeping your history complete.'))}</span></div>` : ''}
         </div>
 
         <div class="form-section">${attestationHtml()}</div>
 
-        <div class="form-section">${remindersHtml()}</div>
+        ${allInPast() ? '' : `<div class="form-section">${remindersHtml()}</div>`}
 
         <div class="form-section field">
           <label for="f-notes">${esc(t('Notes'))}</label>
@@ -408,6 +466,7 @@ export function openEventForm(opts = {}) {
       }
       if (f.attNote) v.attNote = f.attNote.value;
       if (f.saveAsCourse) v.saveAsCourse = f.saveAsCourse.checked;
+      if (f.repeatUntil) v.repeatUntil = f.repeatUntil.value || v.repeatUntil;
     }
 
     // ----- interactions -----
@@ -424,6 +483,14 @@ export function openEventForm(opts = {}) {
         form.querySelectorAll('[data-dur]').forEach((b) => b.classList.toggle('active', Number(b.dataset.dur) === dur));
       }
       if (e.target.name === 'title') form.querySelector('.field-error-title').hidden = true;
+      if (e.target.name === 'repeatUntil') {
+        const label = form.querySelector('[data-repeat-count]');
+        if (label) {
+          const n = repeatCount();
+          label.textContent = repeatLabel(n);
+          label.className = `small ${n > 200 || !n ? 'error-text' : 'muted'}`;
+        }
+      }
     });
 
     let lastStartTime = v.startTime;
@@ -468,6 +535,10 @@ export function openEventForm(opts = {}) {
         else v.courseId = null;
         lastStartTime = v.startTime;
         render();
+      } else if (n === 'repeat') {
+        v.repeat = e.target.checked;
+        if (v.repeatUntil < v.date) v.repeatUntil = schoolYearEnd(v.date);
+        readAndRender();
       } else if (n === 'attRequired') {
         v.attRequired = e.target.checked;
         readAndRender();
@@ -489,6 +560,12 @@ export function openEventForm(opts = {}) {
     on(form, 'click', '[data-kind]', (e, b) => {
       readInputs();
       v.kind = b.dataset.kind;
+      dirty = true;
+      readAndRender(false);
+    });
+    on(form, 'click', '[data-att-received]', (e, b) => {
+      readInputs();
+      v.attReceived = b.dataset.attReceived === '1';
       dirty = true;
       readAndRender(false);
     });
@@ -541,7 +618,31 @@ export function openEventForm(opts = {}) {
           return toast(t('The end time must be after the start time.'), { type: 'error' });
         }
       }
+      const repeating = canRepeat() && v.repeat;
+      if (repeating && (repeatCount() < 1 || repeatCount() > 200)) return toast(repeatLabel(repeatCount()), { type: 'error' });
       setBusy(btn, true);
+      // Something already planned at the same time is usually a duplicate: ask first.
+      if (!v.allDay) {
+        try {
+          const same = (await api.get(`/api/events${qs({ start: startW, end: endW })}`)).filter(
+            (x) => x.id !== editing?.id && x.status !== 'cancelled' && !x.allDay
+          );
+          if (same.length) {
+            setBusy(btn, false);
+            const ok = await confirmDialog({
+              title: t('Something is already planned at that time'),
+              message:
+                same.map((x) => `<b>${esc(x.title)}</b> · ${esc(timeRange(x))}`).join('<br>') +
+                `<br><br>${esc(t('Save anyway? Choose Cancel if it is the same appointment entered twice.'))}`,
+              confirm: t('Save anyway'),
+            });
+            if (!ok) return;
+            setBusy(btn, true);
+          }
+        } catch {
+          /* the check is only a help: it never blocks saving */
+        }
+      }
       try {
         let newCourse = false;
         if (!v.courseId && v.saveAsCourse && !editing) {
@@ -568,7 +669,8 @@ export function openEventForm(opts = {}) {
           end: endW,
           allDay: v.allDay,
           reminders: v.reminders,
-          attestation: { required: v.attRequired, note: v.attNote },
+          attestation: { required: v.attRequired, note: v.attNote, received: v.attRequired && askReceived() && v.attReceived },
+          repeat: repeating ? { until: v.repeatUntil } : undefined,
         };
         const result = editing ? await api.put(`/api/events/${editing.id}`, payload) : await api.post('/api/events', payload);
         savePrefs({
@@ -581,6 +683,12 @@ export function openEventForm(opts = {}) {
         changed();
         m.close(true);
         if (editing) toast(t('Changes saved'), { type: 'success' });
+        else if (result.created > 1)
+          toast(
+            tn(result.created, '{n} session created', '{n} sessions created') +
+              (result.skipped ? ` · ${tn(result.skipped, '{n} week skipped (holidays)', '{n} weeks skipped (holidays)')}` : ''),
+            { type: 'success', duration: 7000 }
+          );
         else
           toast(newCourse ? t('Appointment created and course saved in My courses') : t('Appointment created'), {
             type: 'success',

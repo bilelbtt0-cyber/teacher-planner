@@ -104,6 +104,25 @@ export async function render(root, params) {
       </div></div>`;
   }
 
+  // History from past years is easier to read grouped by school year (September → June).
+  const schoolYear = (w) => {
+    const first = Number(w.slice(0, 4)) - (Number(w.slice(5, 7)) >= 9 ? 0 : 1);
+    return `${first}–${first + 1}`;
+  };
+  function listHtml(list, kind) {
+    const years = new Set(list.map((e) => schoolYear(e.start)));
+    if (!['received', 'waived'].includes(kind) || years.size < 2) return list.map((e) => card(e, kind)).join('');
+    let last = '';
+    return list
+      .map((e) => {
+        const y = schoolYear(e.start);
+        const head = y !== last ? `<div class="att-year">${esc(t('School year {y}', { y }))}</div>` : '';
+        last = y;
+        return head + card(e, kind);
+      })
+      .join('');
+  }
+
   function draw() {
     const list = data[tab];
     const counts = Object.fromEntries(TABS.map((x) => [x.key, data[x.key].length]));
@@ -124,7 +143,7 @@ export async function render(root, params) {
           ).join('')}</div>
           ${tab === 'overdue' && list.length ? `<div class="tip" style="margin-bottom:14px">${icon('info')}<span>${esc(t('One attestation for several sessions? Tick them and mark them received together with a single scan.'))}</span></div>` : ''}
           ${selectable && list.length > 1 ? `<label class="flex small muted" style="margin:0 0 10px 18px;cursor:pointer"><input type="checkbox" data-select-all ${selCount === list.length ? 'checked' : ''} style="accent-color:var(--primary);width:17px;height:17px">${esc(t('Select all'))}</label>` : ''}
-          <div class="att-list">${list.length ? list.map((e) => card(e, tab)).join('') : emptyState(empties[tab])}</div>
+          <div class="att-list">${list.length ? listHtml(list, tab) : emptyState(empties[tab])}</div>
           ${
             selectable && selCount
               ? `<div class="bulk-bar"><b>${esc(tn(selCount, '{n} selected', '{n} selected'))}</b><span class="spacer"></span>
